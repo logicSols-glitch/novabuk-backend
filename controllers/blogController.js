@@ -215,3 +215,22 @@ exports.getAllBlogsAdmin = async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 };
+
+// @desc    Get single blog by id (admin only)
+// @route   GET /api/blogs/admin/:id
+// @access  Private/Admin
+exports.getBlogByIdAdmin = async (req, res) => {
+  try {
+    const blog = await Blog.findById(req.params.id);
+
+    if (!blog) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Blog not found" });
+    }
+
+    res.status(200).json({ success: true, data: blog });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};

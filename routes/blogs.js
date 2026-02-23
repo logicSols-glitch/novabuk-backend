@@ -9,6 +9,7 @@ const {
   publishBlog,
   deleteBlog,
   getAllBlogsAdmin,
+  getBlogByIdAdmin,
 } = require("../controllers/blogController");
 const { protect, authorize } = require("../middleware/auth");
 
@@ -23,6 +24,13 @@ router.get(
   protect,
   authorize("admin", "editor"),
   getAllBlogsAdmin,
+);
+// Admin: get single blog by id (includes unpublished)
+router.get(
+  "/admin/:id",
+  protect,
+  authorize("admin", "editor"),
+  getBlogByIdAdmin,
 );
 router.post("/", protect, authorize("admin", "editor"), createBlog);
 router.put("/:id", protect, authorize("admin", "editor"), updateBlog);

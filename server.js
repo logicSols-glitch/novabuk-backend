@@ -29,6 +29,7 @@ connectDB();
 // Routes
 app.use("/api/blogs", require("./routes/blogs"));
 app.use("/api/admin", require("./routes/admin"));
+app.use("/api/uploads", require("./routes/uploads"));
 
 // Health Check
 app.get("/api/health", (req, res) => {
@@ -54,6 +55,16 @@ app.use((err, req, res, next) => {
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
-  console.log(`🚀 NovaBuk Blog Backend running on http://localhost:${PORT}`);
-  console.log(`📝 API Documentation: http://localhost:${PORT}/api/docs`);
+  console.log(`NovaBuk Blog Backend running on http://localhost:${PORT}`);
+  console.log(` API Documentation: http://localhost:${PORT}/api/docs`);
 });
+
+// const cors = require('cors');
+app.use(cors({
+  origin: [
+    "http://localhost:3000",
+    "http://localhost:5000",
+    "https://novabukrepo.vercel.app/"  // vercel link added here
+  ],
+  credentials: true
+}));
