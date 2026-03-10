@@ -1,7 +1,7 @@
 {
-  "name": "novabuk-blog-backend",
+  "name": "novabuk-backend",
   "version": "1.0.0",
-  "description": "NovaBuk Blog Backend API with MongoDB",
+  "description": "NovaBuk HealthTech Backend API",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -25,7 +25,8 @@
     "jsonwebtoken": "^8.5.1",
     "mongodb": "^5.8.0",
     "mongoose": "^7.5.0",
-    "multer": "^2.0.2"
+    "multer": "^2.0.2",
+    "resend": "^3.5.0"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"

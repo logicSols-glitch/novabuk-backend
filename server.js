@@ -5,18 +5,35 @@ require("dotenv").config();
 
 const app = express();
 
-// Middleware
-app.use(cors());
+// ── CORS ──────────────────────────────────────────────────
+const allowedOrigins = [
+  "https://novabuk.vercel.app",
+  "http://localhost:3000",
+  "http://localhost:5500",
+  "http://127.0.0.1:5500",
+  "http://localhost:5501",      // ← add this
+  "http://127.0.0.1:5501",     // ← add this (your actual origin)
+];
+
+app.use(
+  cors({
+    origin: function (origin, callback) {
+      if (!origin) return callback(null, true); // allows file:// and null
+      if (allowedOrigins.includes(origin)) return callback(null, true);
+      return callback(new Error("Not allowed by CORS"));
+    },
+    credentials: true,
+  })
+);
+
+// ── MIDDLEWARE ────────────────────────────────────────────
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// MongoDB Connection
+// ── DATABASE ──────────────────────────────────────────────
 const connectDB = async () => {
   try {
-    await mongoose.connect(process.env.MONGODB_URI, {
-      useNewUrlParser: true,
-      useUnifiedTopology: true,
-    });
+    await mongoose.connect(process.env.MONGODB_URI);
     console.log("✓ MongoDB Connected Successfully");
   } catch (error) {
     console.error("✗ MongoDB Connection Error:", error);
@@ -26,25 +43,39 @@ const connectDB = async () => {
 
 connectDB();
 
-// Routes
-app.use("/api/blogs", require("./routes/blogs"));
-app.use("/api/admin", require("./routes/admin"));
+// ── ROUTES — existing ────────────────────────────────────
+app.use("/api/blogs",   require("./routes/blogs"));
+app.use("/api/admin",   require("./routes/admin"));
 app.use("/api/uploads", require("./routes/uploads"));
 
-// Health Check
+// ── ROUTES — new patient app ─────────────────────────────
+app.use("/api/users",    require("./routes/users"));    // auth + profile
+app.use("/api/symptoms", require("./routes/symptoms")); // symptom logging
+app.use("/api/clinics",  require("./routes/clinics"));  // clinic directory
+app.use("/api/visits",    require("./routes/visits"));    // visit requests + history
+app.use("/api/dashboard", require("./routes/dashboard")); // home screen stats
+app.use("/api/reviews",   require("./routes/reviews"));   // clinic reviews
+app.use("/api/contact",   require("./routes/contact"));   // contact form
+
+// ── HEALTH CHECK ──────────────────────────────────────────
 app.get("/api/health", (req, res) => {
-  res.json({ status: "Server is running", timestamp: new Date() });
+  res.json({
+    status: "Server is running",
+    timestamp: new Date(),
+    environment: process.env.NODE_ENV || "development",
+  });
 });
 
-// 404 Handler
+// ── 404 ───────────────────────────────────────────────────
 app.use((req, res) => {
-  res.status(404).json({ message: "Route not found" });
+  res.status(404).json({ success: false, message: "Route not found" });
 });
 
-// Error Handler
+// ── ERROR HANDLER ─────────────────────────────────────────
 app.use((err, req, res, next) => {
   console.error(err.stack);
   res.status(500).json({
+    success: false,
     message: "Server error",
     error:
       process.env.NODE_ENV === "development"
@@ -53,18 +84,9 @@ app.use((err, req, res, next) => {
   });
 });
 
+// ── START ─────────────────────────────────────────────────
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
-  console.log(`NovaBuk Blog Backend running on http://localhost:${PORT}`);
-  console.log(` API Documentation: http://localhost:${PORT}/api/docs`);
+  console.log(`🚀 NovaBuk Backend running on http://localhost:${PORT}`);
+  console.log(`   ENV: ${process.env.NODE_ENV || "development"}`);
 });
-
-// const cors = require('cors');
-app.use(cors({
-  origin: [
-    "http://localhost:3000",
-    "http://localhost:5000",
-    "https://novabukrepo.vercel.app/"  // vercel link added here
-  ],
-  credentials: true
-}));
