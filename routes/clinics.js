@@ -166,3 +166,56 @@ router.post("/seed", async (req, res) => {
 });
 
 module.exports = router;
+
+// ─────────────────────────────────────────────
+// ADMIN ROUTES — require admin token
+// ─────────────────────────────────────────────
+const { protectAdmin } = require("../middleware/auth");
+
+// POST /api/clinics — add new clinic
+router.post("/", protectAdmin, async (req, res) => {
+  try {
+    const clinic = await Clinic.create(req.body);
+    res.status(201).json({ success: true, message: "Clinic added.", data: clinic });
+  } catch (error) {
+    console.error("Add clinic error:", error);
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+});
+
+// PUT /api/clinics/:id — edit clinic
+router.put("/:id", protectAdmin, async (req, res) => {
+  try {
+    const clinic = await Clinic.findByIdAndUpdate(req.params.id, req.body, { new: true, runValidators: true });
+    if (!clinic) return res.status(404).json({ success: false, message: "Clinic not found." });
+    res.json({ success: true, message: "Clinic updated.", data: clinic });
+  } catch (error) {
+    console.error("Update clinic error:", error);
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+});
+
+// DELETE /api/clinics/:id — toggle active/inactive
+router.delete("/:id", protectAdmin, async (req, res) => {
+  try {
+    const clinic = await Clinic.findById(req.params.id);
+    if (!clinic) return res.status(404).json({ success: false, message: "Clinic not found." });
+    clinic.isActive = !clinic.isActive;
+    await clinic.save();
+    res.json({ success: true, message: `Clinic ${clinic.isActive ? "activated" : "deactivated"}.`, data: clinic });
+  } catch (error) {
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+});
+
+// PATCH /api/clinics/:id/toggle — toggle open/closed
+router.patch("/:id/toggle", protectAdmin, async (req, res) => {
+  try {
+    const { isOpen } = req.body;
+    const clinic = await Clinic.findByIdAndUpdate(req.params.id, { isOpen }, { new: true });
+    if (!clinic) return res.status(404).json({ success: false, message: "Clinic not found." });
+    res.json({ success: true, message: `Clinic is now ${isOpen ? "Open" : "Closed"}.`, data: clinic });
+  } catch (error) {
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+});

@@ -16,7 +16,7 @@ const generateToken = (id) =>
 // ─────────────────────────────────────────────
 router.post("/register", async (req, res) => {
   try {
-    const { fullName, email, password } = req.body;
+    const { fullName, email, password, role } = req.body;
 
     if (!fullName || !email || !password) {
       return res.status(400).json({
@@ -40,7 +40,7 @@ router.post("/register", async (req, res) => {
       });
     }
 
-    const user = await User.create({ fullName, email, password });
+    const user = await User.create({ fullName, email, password, role });
 
     // Send welcome email (non-blocking — don't fail registration if email fails)
     sendWelcomeEmail({ to: email, name: fullName }).catch((err) =>
@@ -55,6 +55,7 @@ router.post("/register", async (req, res) => {
         id: user._id,
         fullName: user.fullName,
         email: user.email,
+        role: user.role,
         profileComplete: user.profileComplete,
       },
     });
@@ -127,7 +128,6 @@ router.get("/me", protectUser, async (req, res) => {
         id: req.user._id,
         fullName: req.user.fullName,
         email: req.user.email,
-        avatarUrl: req.user.avatarUrl,
         healthProfile: req.user.healthProfile,
         privacySettings: req.user.privacySettings,
         notificationSettings: req.user.notificationSettings,
@@ -180,11 +180,10 @@ router.put("/health-profile", protectUser, async (req, res) => {
 // ─────────────────────────────────────────────
 router.put("/update", protectUser, async (req, res) => {
   try {
-    const { fullName, email, avatarUrl } = req.body;
+    const { fullName, email } = req.body;
     const updates = {};
-    if (fullName)   updates.fullName  = fullName;
-    if (email)      updates.email     = email.toLowerCase();
-    if (avatarUrl !== undefined) updates.avatarUrl = avatarUrl;
+    if (fullName) updates.fullName = fullName;
+    if (email) updates.email = email.toLowerCase();
 
     const user = await User.findByIdAndUpdate(req.user._id, updates, {
       new: true,
@@ -195,7 +194,6 @@ router.put("/update", protectUser, async (req, res) => {
       success: true,
       message: "Profile updated.",
       user: {
-        avatarUrl: user.avatarUrl,
         id: user._id,
         fullName: user.fullName,
         email: user.email,
@@ -397,7 +395,6 @@ router.get("/settings", protectUser, async (req, res) => {
 // ─────────────────────────────────────────────
 // PUT /api/users/privacy-settings
 // Protected — update privacy settings toggles
-// (Figma — Privacy Settings screen)
 // ─────────────────────────────────────────────
 router.put("/privacy-settings", protectUser, async (req, res) => {
   try {
