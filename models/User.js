@@ -15,11 +15,6 @@ const userSchema = new mongoose.Schema(
       lowercase: true,
       trim: true,
     },
-    role: {
-      type: String,
-      enum: ["Patient", "Doctors"],
-      default: "Patient",
-    },
     password: {
       type: String,
       required: [true, "Password is required"],
@@ -41,6 +36,18 @@ const userSchema = new mongoose.Schema(
       allergies:           { type: [String], default: [] },
     },
 
+    // ── EXTENDED PROFILE (Profile Settings screen) ────────
+    phone:       { type: String, default: "" },
+    dateOfBirth: { type: String, default: "" },
+    address:     { type: String, default: "" },
+    city:        { type: String, default: "" },
+    state:       { type: String, default: "" },
+    avatarUrl:   { type: String, default: "" },
+    emergencyContact: {
+      name:  { type: String, default: "" },
+      phone: { type: String, default: "" },
+    },
+
     // ── PRIVACY SETTINGS (Figma — Privacy Settings screen) ──
     privacySettings: {
       shareDataWithProviders:  { type: Boolean, default: true  },
@@ -49,8 +56,8 @@ const userSchema = new mongoose.Schema(
       thirdPartyDataSharing:   { type: Boolean, default: false },
       profileVisibility: {
         type: String,
-        enum: ["Private", "Providers Only", "Public"],
-        default: "Private",
+        enum: ["Private - Only me", "Healthcare providers only", "Private - Anyone"],
+        default: "Private - Only me",
       },
     },
 
@@ -63,9 +70,6 @@ const userSchema = new mongoose.Schema(
       smsNotifications:     { type: Boolean, default: false },
       emailNotifications:   { type: Boolean, default: true  },
     },
-
-    // ── AVATAR ───────────────────────────────────────────
-    avatarUrl: { type: String, default: "" },
 
     // ── ONBOARDING ────────────────────────────────────────
     profileComplete: { type: Boolean, default: false },

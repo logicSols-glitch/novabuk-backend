@@ -8,11 +8,12 @@ const app = express();
 // ── CORS ──────────────────────────────────────────────────
 const allowedOrigins = [
   "https://novabuk.vercel.app",
+  "https://novabukrepo.vercel.app",
   "http://localhost:3000",
   "http://localhost:5500",
   "http://127.0.0.1:5500",
-  "http://localhost:5501",      // ← add this
-  "http://127.0.0.1:5501",     // ← add this (your actual origin)
+  "http://localhost:5501",   
+  "http://127.0.0.1:5501",     
 ];
 
 app.use(

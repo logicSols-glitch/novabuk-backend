@@ -16,7 +16,7 @@ const generateToken = (id) =>
 // ─────────────────────────────────────────────
 router.post("/register", async (req, res) => {
   try {
-    const { fullName, email, password, role } = req.body;
+    const { fullName, email, password } = req.body;
 
     if (!fullName || !email || !password) {
       return res.status(400).json({
@@ -40,7 +40,7 @@ router.post("/register", async (req, res) => {
       });
     }
 
-    const user = await User.create({ fullName, email, password, role });
+    const user = await User.create({ fullName, email, password });
 
     // Send welcome email (non-blocking — don't fail registration if email fails)
     sendWelcomeEmail({ to: email, name: fullName }).catch((err) =>
@@ -55,7 +55,6 @@ router.post("/register", async (req, res) => {
         id: user._id,
         fullName: user.fullName,
         email: user.email,
-        role: user.role,
         profileComplete: user.profileComplete,
       },
     });
@@ -128,6 +127,13 @@ router.get("/me", protectUser, async (req, res) => {
         id: req.user._id,
         fullName: req.user.fullName,
         email: req.user.email,
+        phone: req.user.phone,
+        dateOfBirth: req.user.dateOfBirth,
+        address: req.user.address,
+        city: req.user.city,
+        state: req.user.state,
+        avatarUrl: req.user.avatarUrl,
+        emergencyContact: req.user.emergencyContact,
         healthProfile: req.user.healthProfile,
         privacySettings: req.user.privacySettings,
         notificationSettings: req.user.notificationSettings,
@@ -180,10 +186,17 @@ router.put("/health-profile", protectUser, async (req, res) => {
 // ─────────────────────────────────────────────
 router.put("/update", protectUser, async (req, res) => {
   try {
-    const { fullName, email } = req.body;
+    const { fullName, email, phone, dateOfBirth, address, city, state, avatarUrl, emergencyContact } = req.body;
     const updates = {};
-    if (fullName) updates.fullName = fullName;
-    if (email) updates.email = email.toLowerCase();
+    if (fullName)         updates.fullName = fullName;
+    if (email)            updates.email    = email.toLowerCase();
+    if (phone       !== undefined) updates.phone       = phone;
+    if (dateOfBirth !== undefined) updates.dateOfBirth = dateOfBirth;
+    if (address     !== undefined) updates.address     = address;
+    if (city        !== undefined) updates.city        = city;
+    if (state       !== undefined) updates.state       = state;
+    if (avatarUrl   !== undefined) updates.avatarUrl   = avatarUrl;
+    if (emergencyContact !== undefined) updates.emergencyContact = emergencyContact;
 
     const user = await User.findByIdAndUpdate(req.user._id, updates, {
       new: true,
@@ -285,7 +298,7 @@ router.post("/forgot-password", async (req, res) => {
     await user.save({ validateBeforeSave: false });
 
     // Build reset URL — frontend will handle this page
-    const resetUrl = `${process.env.FRONTEND_URL}/reset-password?token=${resetToken}`;
+   const resetUrl = `${process.env.FRONTEND_URL}/reset-password.html?token=${resetToken}`;
 
     try {
       await sendPasswordResetEmail({
@@ -380,6 +393,13 @@ router.get("/settings", protectUser, async (req, res) => {
         profile: {
           fullName: req.user.fullName,
           email: req.user.email,
+          phone: req.user.phone,
+          dateOfBirth: req.user.dateOfBirth,
+          address: req.user.address,
+          city: req.user.city,
+          state: req.user.state,
+          avatarUrl: req.user.avatarUrl,
+          emergencyContact: req.user.emergencyContact,
           healthProfile: req.user.healthProfile,
           profileComplete: req.user.profileComplete,
         },
@@ -395,6 +415,7 @@ router.get("/settings", protectUser, async (req, res) => {
 // ─────────────────────────────────────────────
 // PUT /api/users/privacy-settings
 // Protected — update privacy settings toggles
+// (Figma — Privacy Settings screen)
 // ─────────────────────────────────────────────
 router.put("/privacy-settings", protectUser, async (req, res) => {
   try {
