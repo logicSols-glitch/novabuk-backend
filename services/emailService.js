@@ -14,8 +14,8 @@
 const { Resend } = require("resend");
 
 const resend = new Resend(process.env.RESEND_API_KEY);
-const FROM_EMAIL = "NovaBuk <onboarding@resend.dev>";
-// const FROM_EMAIL = process.env.FROM_EMAIL || "NovaBuk <noreply@novabuk.com>";
+// const FROM_EMAIL = "NovaBuk <onboarding@resend.dev>";
+const FROM_EMAIL = process.env.FROM_EMAIL || "NovaBuk <noreply@novabuk.com>";
 const APP_NAME = "NovaBuk";
 
 /**
@@ -115,7 +115,7 @@ const sendPasswordResetEmail = async ({ to, name, resetUrl }) => {
  * Welcome email sent after successful registration
  */
 const sendWelcomeEmail = async ({ to, name }) => {
-  const subject = `Welcome to ${APP_NAME} 👋`;
+  const subject = `Welcome to ${APP_NAME} `;
 
   const html = `
     <!DOCTYPE html>
@@ -129,7 +129,7 @@ const sendWelcomeEmail = async ({ to, name }) => {
         </div>
 
         <div style="padding:40px;">
-          <h2 style="margin:0 0 12px;color:#1a1a1a;font-size:20px;">Welcome, ${name}! 🎉</h2>
+          <h2 style="margin:0 0 12px;color:#1a1a1a;font-size:20px;">Welcome, ${name}! </h2>
           <p style="color:#555;line-height:1.6;margin:0 0 20px;">
             Your ${APP_NAME} account is ready. You can now log your symptoms,
             find nearby clinics, and manage your health — all in one place.
