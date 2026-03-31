@@ -55,6 +55,8 @@ router.post("/register", async (req, res) => {
         id: user._id,
         fullName: user.fullName,
         email: user.email,
+        role: user.role,   // ← make sure this is included
+        avatarUrl: user.avatarUrl,
         profileComplete: user.profileComplete,
       },
     });
