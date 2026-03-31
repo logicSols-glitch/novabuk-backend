@@ -79,8 +79,8 @@ const sendPasswordResetEmail = async ({ to, name, resetUrl }) => {
           <div style="text-align:center;margin:32px 0;">
             <a href="${resetUrl}"
                style="display:inline-block;background:linear-gradient(135deg,#7ecad7,#35bac9);
-                      color:white;text-decoration:none;padding:14px 36px;
-                      border-radius:8px;font-weight:600;font-size:15px;">
+                color:white;text-decoration:none;padding:14px 36px;
+                border-radius:8px;font-weight:600;font-size:15px;">
               Reset Password
             </a>
           </div>
@@ -185,7 +185,7 @@ const sendVisitConfirmationEmail = async ({ to, name, clinicName, status, prefer
             <p style="margin:0 0 16px;color:#1a1a1a;font-weight:600;">${clinicName}</p>
             <p style="margin:0 0 8px;color:#888;font-size:13px;">STATUS</p>
             <span style="display:inline-block;background:${statusColor};color:white;
-                         padding:4px 14px;border-radius:20px;font-size:13px;font-weight:600;">
+                padding:4px 14px;border-radius:20px;font-size:13px;font-weight:600;">
               ${status}
             </span>
             ${preferredDate ? `

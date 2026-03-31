@@ -35,9 +35,9 @@ app.use(express.urlencoded({ extended: true }));
 const connectDB = async () => {
   try {
     await mongoose.connect(process.env.MONGODB_URI);
-    console.log("✓ MongoDB Connected Successfully");
+    console.log(" MongoDB Connected Successfully");
   } catch (error) {
-    console.error("✗ MongoDB Connection Error:", error);
+    console.error(" MongoDB Connection Error:", error);
     process.exit(1);
   }
 };
@@ -88,6 +88,6 @@ app.use((err, req, res, next) => {
 // ── START ─────────────────────────────────────────────────
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
-  console.log(`🚀 NovaBuk Backend running on http://localhost:${PORT}`);
+  console.log(` NovaBuk Backend running on http://localhost:${PORT}`);
   console.log(`   ENV: ${process.env.NODE_ENV || "development"}`);
 });

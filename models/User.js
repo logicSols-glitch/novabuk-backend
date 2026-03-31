@@ -71,6 +71,13 @@ const userSchema = new mongoose.Schema(
       emailNotifications:   { type: Boolean, default: true  },
     },
 
+    // ── ROLE ─────────────────────────────────────────────
+    role: {
+      type: String,
+      enum: ["Patient", "Doctors"],
+      default: "Patient",
+    },
+
     // ── ONBOARDING ────────────────────────────────────────
     profileComplete: { type: Boolean, default: false },
     isActive:        { type: Boolean, default: true  },
