@@ -16,7 +16,7 @@ const generateToken = (id) =>
 // ─────────────────────────────────────────────
 router.post("/register", async (req, res) => {
   try {
-    const { fullName, email, password, role } = req.body;
+    const { fullName, email, password } = req.body;
 
     if (!fullName || !email || !password) {
       return res.status(400).json({
@@ -40,7 +40,7 @@ router.post("/register", async (req, res) => {
       });
     }
 
-    const user = await User.create({ fullName, email, password, role: role || "Patient" });
+    const user = await User.create({ fullName, email, password });
 
     // Send welcome email (non-blocking — don't fail registration if email fails)
     sendWelcomeEmail({ to: email, name: fullName }).catch((err) =>
@@ -108,8 +108,6 @@ router.post("/login", async (req, res) => {
         id: user._id,
         fullName: user.fullName,
         email: user.email,
-        role: user.role,
-        avatarUrl: user.avatarUrl,
         profileComplete: user.profileComplete,
       },
     });
@@ -174,6 +172,8 @@ router.put("/health-profile", protectUser, async (req, res) => {
         id: user._id,
         fullName: user.fullName,
         email: user.email,
+        role: user.role,
+        avatarUrl: user.avatarUrl,
         healthProfile: user.healthProfile,
         profileComplete: user.profileComplete,
       },
@@ -214,6 +214,8 @@ router.put("/update", protectUser, async (req, res) => {
         id: user._id,
         fullName: user.fullName,
         email: user.email,
+        role: user.role,
+        avatarUrl: user.avatarUrl,
         healthProfile: user.healthProfile,
         profileComplete: user.profileComplete,
       },
