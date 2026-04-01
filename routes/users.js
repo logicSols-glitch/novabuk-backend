@@ -172,8 +172,6 @@ router.put("/health-profile", protectUser, async (req, res) => {
         id: user._id,
         fullName: user.fullName,
         email: user.email,
-        role: user.role,
-        avatarUrl: user.avatarUrl,
         healthProfile: user.healthProfile,
         profileComplete: user.profileComplete,
       },
@@ -214,8 +212,6 @@ router.put("/update", protectUser, async (req, res) => {
         id: user._id,
         fullName: user.fullName,
         email: user.email,
-        role: user.role,
-        avatarUrl: user.avatarUrl,
         healthProfile: user.healthProfile,
         profileComplete: user.profileComplete,
       },
@@ -414,6 +410,73 @@ router.get("/settings", protectUser, async (req, res) => {
       },
     });
   } catch (error) {
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+});
+
+
+// ─────────────────────────────────────────────
+// PUT /api/users/profile
+// Protected — save ALL profile data in one call
+// (personal info + health profile + emergency contact + avatar)
+// ─────────────────────────────────────────────
+router.put("/profile", protectUser, async (req, res) => {
+  try {
+    const {
+      fullName, email, phone, dateOfBirth, address, city, state,
+      avatarUrl, emergencyContact,
+      // health profile fields
+      ageRange, gender, existingConditions, allergies,
+    } = req.body;
+
+    // Build personal info updates
+    const updates = {};
+    if (fullName)            updates.fullName    = fullName;
+    if (email)               updates.email       = email.toLowerCase();
+    if (phone      !== undefined) updates.phone      = phone;
+    if (dateOfBirth!== undefined) updates.dateOfBirth = dateOfBirth;
+    if (address    !== undefined) updates.address    = address;
+    if (city       !== undefined) updates.city       = city;
+    if (state      !== undefined) updates.state      = state;
+    if (avatarUrl  !== undefined) updates.avatarUrl  = avatarUrl;
+    if (emergencyContact !== undefined) updates.emergencyContact = emergencyContact;
+
+    // Always update health profile fields if any were sent
+    const hasHealthData = ageRange !== undefined || gender !== undefined ||
+                          existingConditions !== undefined || allergies !== undefined;
+    if (hasHealthData) {
+      // Fetch existing health profile to avoid wiping fields not sent
+      const current = await User.findById(req.user._id);
+      const hp = current.healthProfile || {};
+      updates.healthProfile = {
+        ageRange:           ageRange           !== undefined ? ageRange           : hp.ageRange,
+        gender:             gender             !== undefined ? gender             : hp.gender,
+        existingConditions: existingConditions !== undefined ? existingConditions : hp.existingConditions,
+        allergies:          allergies          !== undefined ? allergies          : hp.allergies,
+      };
+      updates.profileComplete = true;
+    }
+
+    const user = await User.findByIdAndUpdate(req.user._id, updates, {
+      new: true,
+      runValidators: true,
+    });
+
+    res.json({
+      success: true,
+      message: "Profile saved successfully.",
+      user: {
+        id: user._id,
+        fullName: user.fullName,
+        email: user.email,
+        role: user.role,
+        avatarUrl: user.avatarUrl,
+        healthProfile: user.healthProfile,
+        profileComplete: user.profileComplete,
+      },
+    });
+  } catch (error) {
+    console.error("Unified profile save error:", error);
     res.status(500).json({ success: false, message: "Server error." });
   }
 });
