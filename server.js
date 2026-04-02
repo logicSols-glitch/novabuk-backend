@@ -13,9 +13,7 @@ const allowedOrigins = [
   "http://localhost:5500",
   "http://127.0.0.1:5500",
   "http://localhost:5501",   
-  "http://127.0.0.1:5501", 
-  "http://localhost:5502",   
-  "http://127.0.0.1:5502",
+  "http://127.0.0.1:5501",     
 ];
 
 app.use(
@@ -52,6 +50,8 @@ app.use("/api/admin",   require("./routes/admin"));
 app.use("/api/uploads", require("./routes/uploads"));
 
 // ── ROUTES — new patient app ─────────────────────────────
+// const notifications = require('./routes/notifications');
+app.use('/api/notifications', require('./routes/notifications'));
 app.use("/api/users",    require("./routes/users"));    // auth + profile
 app.use("/api/symptoms", require("./routes/symptoms")); // symptom logging
 app.use("/api/clinics",  require("./routes/clinics"));  // clinic directory

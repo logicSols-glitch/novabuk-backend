@@ -6,6 +6,7 @@ const Symptom = require("../models/Symptom");
 const User = require("../models/User");
 const { protectUser } = require("../middleware/authUser");
 const { sendVisitConfirmationEmail } = require("../services/emailService");
+const Notification = require("../models/Notification");
 
 // All visit routes require a logged-in patient
 router.use(protectUser);
@@ -46,12 +47,14 @@ router.post("/request", async (req, res) => {
     }
 
     // Snapshot user's health profile at time of request
-    const healthProfileSnapshot = {
+    // Respect shareDataWithProviders privacy setting
+    const sharesData = req.user.privacySettings?.shareDataWithProviders !== false;
+    const healthProfileSnapshot = sharesData ? {
       ageRange: req.user.healthProfile?.ageRange || null,
       gender: req.user.healthProfile?.gender || null,
       existingConditions: req.user.healthProfile?.existingConditions || [],
       allergies: req.user.healthProfile?.allergies || [],
-    };
+    } : {};
 
     const visit = await Visit.create({
       user: req.user._id,
@@ -70,16 +73,28 @@ router.post("/request", async (req, res) => {
     // Populate clinic info for response
     await visit.populate("clinic", "name location contactPhone");
 
+    // ── Create in-app notification ───────────────────────
+    await Notification.create({
+      user: req.user._id,
+      type: "visit_requested",
+      title: "Visit Request Submitted",
+      message: `Your visit to ${clinic.name} has been submitted and is pending confirmation.`,
+      link: "./app-history.html",
+    }).catch(err => console.error("Notification create failed:", err.message));
+
     // ── Send visit confirmation email (non-blocking) ──────
-    sendVisitConfirmationEmail({
-      to: req.user.email,
-      name: req.user.fullName,
-      clinicName: clinic.name,
-      status: "Pending",
-      preferredDate: preferredDate || null,
-    }).catch((err) =>
-      console.error("Visit confirmation email failed:", err.message)
-    );
+    const reqEmailEnabled = req.user.notificationSettings?.emailNotifications !== false;
+    if (reqEmailEnabled) {
+      sendVisitConfirmationEmail({
+        to: req.user.email,
+        name: req.user.fullName,
+        clinicName: clinic.name,
+        status: "Pending",
+        preferredDate: preferredDate || null,
+      }).catch((err) =>
+        console.error("Visit confirmation email failed:", err.message)
+      );
+    }
 
     res.status(201).json({
       success: true,
@@ -178,16 +193,28 @@ router.patch("/:id/cancel", async (req, res) => {
     visit.status = "Cancelled";
     await visit.save();
 
+    // ── Create in-app notification ───────────────────────
+    await Notification.create({
+      user: req.user._id,
+      type: "visit_cancelled",
+      title: "Visit Cancelled",
+      message: `Your visit to ${visit.clinic.name} has been cancelled.`,
+      link: "./app-history.html",
+    }).catch(err => console.error("Notification create failed:", err.message));
+
     // ── Send cancellation email (non-blocking) ────────────
-    sendVisitConfirmationEmail({
-      to: req.user.email,
-      name: req.user.fullName,
-      clinicName: visit.clinic.name,
-      status: "Cancelled",
-      preferredDate: visit.preferredDate,
-    }).catch((err) =>
-      console.error("Cancellation email failed:", err.message)
-    );
+    const cancelEmailEnabled = req.user.notificationSettings?.emailNotifications !== false;
+    if (cancelEmailEnabled) {
+      sendVisitConfirmationEmail({
+        to: req.user.email,
+        name: req.user.fullName,
+        clinicName: visit.clinic.name,
+        status: "Cancelled",
+        preferredDate: visit.preferredDate,
+      }).catch((err) =>
+        console.error("Cancellation email failed:", err.message)
+      );
+    }
 
     res.json({
       success: true,
@@ -232,6 +259,20 @@ router.patch("/:id/status", protect, async (req, res) => {
     visit.status = status;
     if (clinicNotes) visit.clinicNotes = clinicNotes;
     await visit.save();
+
+    // ── Create in-app notification for patient ───────────
+    const statusMessages = {
+      Confirmed:  `Your visit to ${visit.clinic.name} has been confirmed!`,
+      Completed:  `Your visit to ${visit.clinic.name} is marked as completed.`,
+      Cancelled:  `Your visit to ${visit.clinic.name} was cancelled by the clinic.`,
+    };
+    await Notification.create({
+      user: visit.user._id,
+      type: `visit_${status.toLowerCase()}`,
+      title: `Visit ${status}`,
+      message: statusMessages[status] || `Visit status updated to ${status}.`,
+      link: "./app-history.html",
+    }).catch(err => console.error("Notification create failed:", err.message));
 
     // ── Send status update email to patient (if they have it enabled) ──
     const emailEnabled = visit.user?.notificationSettings?.visitStatusUpdates !== false
