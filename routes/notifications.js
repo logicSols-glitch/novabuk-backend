@@ -1,6 +1,6 @@
 const express = require("express");
 const router  = express.Router();
-const Notification = require("../models/Notification");
+const Notification = require("../models/notification");
 const { protectUser } = require("../middleware/authUser");
 
 // All routes require logged-in patient
