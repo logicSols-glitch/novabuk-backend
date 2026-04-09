@@ -6,7 +6,7 @@ const Symptom = require("../models/Symptom");
 const User = require("../models/User");
 const { protectUser } = require("../middleware/authUser");
 const { sendVisitConfirmationEmail } = require("../services/emailService");
-const Notification = require("../models/Notification");
+const Notification = require("../models/notification");
 
 // All visit routes require a logged-in patient
 router.use(protectUser);
