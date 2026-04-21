@@ -3,59 +3,43 @@ const mongoose = require("mongoose");
 const visitSchema = new mongoose.Schema(
   {
     user: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "User",
+      type:     mongoose.Schema.Types.ObjectId,
+      ref:      "User",
       required: true,
     },
     clinic: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "Clinic",
+      type:     mongoose.Schema.Types.ObjectId,
+      ref:      "Clinic",
       required: true,
     },
-    // Symptom log that triggered this visit (optional)
     symptomLog: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "Symptom",
+      type:    mongoose.Schema.Types.ObjectId,
+      ref:     "Symptom",
       default: null,
     },
-    // Visit status lifecycle
+    // InProgress added for clinic portal consultation flow
     status: {
-      type: String,
-      enum: ["Pending", "Confirmed", "Completed", "Cancelled"],
+      type:    String,
+      enum:    ["Pending", "Confirmed", "InProgress", "Completed", "Cancelled"],
       default: "Pending",
     },
-    // Preferred date/time from patient
-    preferredDate: {
-      type: Date,
-      default: null,
-    },
-    // Notes from patient at time of request
-    notes: {
-      type: String,
-      default: "",
-    },
-    // Notes added by clinic after visit
-    // clinicNotes: {
-    //   type: String,
-    //   default: "",
-    // },
-    // Snapshot of health profile sent to clinic at time of request
-    // (so clinic has context even if user updates profile later)
+    preferredDate: { type: Date,   default: null },
+    notes:         { type: String, default: ""   },
     healthProfileSnapshot: {
-      ageRange: String,
-      gender: String,
+      ageRange:           String,
+      gender:             String,
       existingConditions: [String],
-      allergies: [String],
+      allergies:          [String],
     },
-    // clinic consultation field - filled by clinic staff
-    clinicNotes: { type: String, default: ""},
-    diagnosis:  { type: String, default: ""},
-    prescription:  { type: String, default: ""},
-    testsOrdered:  { type: String, default: ""},
-    advice:  { type: String, default: ""},
-    handledBy: {type: mongoose.Schema.Types.ObjectId, ref: 'ClinicStaff', default: null},
-    startedAt:  { type: String, default: ""},
-    completedAt: { type: String, default: ""},
+    // Clinic consultation fields — filled by clinic staff
+    clinicNotes:  { type: String, default: "" },
+    diagnosis:    { type: String, default: "" },
+    prescription: { type: String, default: "" },
+    testsOrdered: { type: String, default: "" },
+    advice:       { type: String, default: "" },
+    handledBy:    { type: mongoose.Schema.Types.ObjectId, ref: "ClinicStaff", default: null },
+    startedAt:    { type: Date, default: null },
+    completedAt:  { type: Date, default: null },
   },
   { timestamps: true }
 );
