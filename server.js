@@ -31,6 +31,9 @@ app.use(
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+const cookieParser = require('cookie-parser')
+app.use(cookieParser());
+
 // ── DATABASE ──────────────────────────────────────────────
 const connectDB = async () => {
   try {
@@ -59,6 +62,10 @@ app.use("/api/visits",    require("./routes/visits"));    // visit requests + hi
 app.use("/api/dashboard", require("./routes/dashboard")); // home screen stats
 app.use("/api/reviews",   require("./routes/reviews"));   // clinic reviews
 app.use("/api/contact",   require("./routes/contact"));   // contact form
+
+// ====== ROUTES FOR CLINIC =================
+app.use('/api/clinic-auth', require('./routes/clinic-auth')) // clinic routes authen
+app.use('./api/clinic', require('./routes/clinic-visits'))
 
 // ── HEALTH CHECK ──────────────────────────────────────────
 app.get("/api/health", (req, res) => {

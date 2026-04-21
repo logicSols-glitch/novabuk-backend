@@ -47,16 +47,21 @@ router.post("/register", async (req, res) => {
       console.error("Welcome email failed:", err.message)
     );
 
+    const token = generateToken(user._id);
+
     res.status(201).json({
-      success: true,
-      message: "Account created successfully.",
-      token: generateToken(user._id),
+      success:  true,
+      message:  "Account created successfully.",
+      token,
+      // redirectTo tells the frontend where to send the user.
+      // Patient → patient dashboard, Doctor → clinic login
+      redirectTo: user.role === "Doctors" ? "./clinic-login.html" : "./app-home.html",
       user: {
-        id: user._id,
-        fullName: user.fullName,
-        email: user.email,
-        role: user.role,   // ← make sure this is included
-        avatarUrl: user.avatarUrl,
+        id:              user._id,
+        fullName:        user.fullName,
+        email:           user.email,
+        role:            user.role,
+        avatarUrl:       user.avatarUrl,
         profileComplete: user.profileComplete,
       },
     });

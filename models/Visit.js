@@ -35,10 +35,10 @@ const visitSchema = new mongoose.Schema(
       default: "",
     },
     // Notes added by clinic after visit
-    clinicNotes: {
-      type: String,
-      default: "",
-    },
+    // clinicNotes: {
+    //   type: String,
+    //   default: "",
+    // },
     // Snapshot of health profile sent to clinic at time of request
     // (so clinic has context even if user updates profile later)
     healthProfileSnapshot: {
@@ -47,6 +47,15 @@ const visitSchema = new mongoose.Schema(
       existingConditions: [String],
       allergies: [String],
     },
+    // clinic consultation field - filled by clinic staff
+    clinicNotes: { type: String, default: ""},
+    diagnosis:  { type: String, default: ""},
+    prescription:  { type: String, default: ""},
+    testsOrdered:  { type: String, default: ""},
+    advice:  { type: String, default: ""},
+    handledBy: {type: mongoose.Schema.Types.ObjectId, ref: 'ClinicStaff', default: null},
+    startedAt:  { type: String, default: ""},
+    completedAt: { type: String, default: ""},
   },
   { timestamps: true }
 );

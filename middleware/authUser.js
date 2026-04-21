@@ -16,6 +16,10 @@ const protectUser = async (req, res, next) => {
     ) {
       token = req.headers.authorization.split(" ")[1];
     }
+    // cookies fallback
+    if (!token && req.cookies && req.cookies.novabuk_token) {
+      token = req.cookies.novabuk_token;
+    }
 
     if (!token) {
       return res.status(401).json({
