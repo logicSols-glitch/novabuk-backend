@@ -47,15 +47,13 @@ router.post("/register", async (req, res) => {
       console.error("Welcome email failed:", err.message)
     );
 
-    const token = generateToken(user._id);
+    const regToken = generateToken(user._id);
 
     res.status(201).json({
-      success:  true,
-      message:  "Account created successfully.",
-      token,
-      // redirectTo tells the frontend where to send the user.
-      // Patient → patient dashboard, Doctor → clinic login
-      redirectTo: user.role === "Doctors" ? "./clinic-login.html" : "./app-home.html",
+      success:    true,
+      message:    "Account created successfully.",
+      token:      regToken,
+      redirectTo: user.role === "Doctors" ? "./clinic-queue.html" : "./app-home.html",
       user: {
         id:              user._id,
         fullName:        user.fullName,
@@ -105,16 +103,20 @@ router.post("/login", async (req, res) => {
       });
     }
 
+    const loginToken = generateToken(user._id);
+
     res.json({
-      success: true,
-      message: "Login successful.",
-      token: generateToken(user._id),
+      success:    true,
+      message:    "Login successful.",
+      token:      loginToken,
+      // Frontend uses redirectTo to know where to send the user
+      redirectTo: user.role === "Doctors" ? "./clinic-queue.html" : "./app-home.html",
       user: {
-        id: user._id,
-        fullName: user.fullName,
-        email: user.email,
-        role: user.role,
-        avatarUrl: user.avatarUrl,
+        id:              user._id,
+        fullName:        user.fullName,
+        email:           user.email,
+        role:            user.role,
+        avatarUrl:       user.avatarUrl,
         profileComplete: user.profileComplete,
       },
     });
@@ -584,6 +586,20 @@ router.delete("/account", protectUser, async (req, res) => {
   } catch (error) {
     res.status(500).json({ success: false, message: "Server error." });
   }
+});
+
+
+// ─────────────────────────────────────────────
+// POST /api/users/logout
+// Clears auth cookie (patients who got one set)
+// ─────────────────────────────────────────────
+router.post("/logout", (req, res) => {
+  res.clearCookie("novabuk_token", {
+    httpOnly: true,
+    secure:   process.env.NODE_ENV === "production",
+    sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+  });
+  res.json({ success: true, message: "Logged out." });
 });
 
 

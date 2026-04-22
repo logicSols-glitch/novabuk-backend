@@ -30,9 +30,8 @@ app.use(
 // ── MIDDLEWARE ────────────────────────────────────────────
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-// cookie-parser lets us read req.cookies in middleware
-// Required for clinic staff HttpOnly cookie auth
-// Install: npm install cookie-parser
+// cookie-parser reads req.cookies — needed for any cookie-based auth
+// Run: npm install cookie-parser
 const cookieParser = require("cookie-parser");
 app.use(cookieParser());
 
@@ -66,9 +65,9 @@ app.use("/api/reviews",   require("./routes/reviews"));   // clinic reviews
 app.use("/api/contact",   require("./routes/contact"));   // contact form
 
 // ── ROUTES — clinic portal ───────────────────────────────
-// Separate auth system (HttpOnly cookies) from patient app
-app.use("/api/clinic-auth", require("./routes/clinic-auth"));
-app.use("/api/clinic",      require("./routes/clinic-visits"));
+// Doctors use the same User JWT from sign-in.html
+// No separate ClinicStaff collection needed.
+app.use("/api/clinic", require("./routes/clinic-visits"));
 
 // ── HEALTH CHECK ──────────────────────────────────────────
 app.get("/api/health", (req, res) => {
