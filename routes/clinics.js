@@ -167,6 +167,104 @@ router.post("/seed", async (req, res) => {
 
 module.exports = router;
 
+
+// ─────────────────────────────────────────────
+// POST /api/clinics/register
+// Doctor self-registration — creates a clinic and
+// links it back to the doctor's User account.
+//
+// Why a separate route from POST /api/clinics?
+//   POST /api/clinics requires protectAdmin (system admin only).
+//   This route requires protectDoctor (any logged-in Doctor).
+//   Doctors should be able to register their own clinic
+//   without needing an admin to do it for them.
+//
+// What it does in one request:
+//   1. Creates the Clinic document
+//   2. Updates the Doctor's User document with clinicId + clinicName
+//   3. Returns the updated user so the frontend can update localStorage
+//
+// Body: { name, address, city, state?, phone, email?, services? }
+// ─────────────────────────────────────────────
+const { protectDoctor } = require("../middleware/authDoctor");
+const User = require("../models/User");
+
+router.post("/register", protectDoctor, async (req, res) => {
+  try {
+    const {
+      name,
+      address,
+      city,
+      state,
+      phone,
+      email,
+      services,
+    } = req.body;
+
+    // Validate required fields
+    if (!name || !address || !city || !phone) {
+      return res.status(400).json({
+        success: false,
+        message: "Clinic name, address, city and phone are required.",
+      });
+    }
+
+    // Check if this doctor already has a clinic registered
+    if (req.user.clinicId) {
+      return res.status(400).json({
+        success: false,
+        message: "You already have a clinic registered.",
+        clinicId: req.user.clinicId,
+      });
+    }
+
+    // Create the clinic
+    const clinic = await Clinic.create({
+      name: name.trim(),
+      location: {
+        address: address.trim(),
+        city:    city.trim(),
+        state:   state?.trim() || "",
+      },
+      contactPhone: phone.trim(),
+      contactEmail: email?.trim() || "",
+      services:     Array.isArray(services) ? services : [],
+      isOpen:       true,
+      isActive:     true,
+    });
+
+    // Link the clinic back to the Doctor's User document
+    const updatedUser = await User.findByIdAndUpdate(
+      req.user._id,
+      {
+        clinicId:   clinic._id,
+        clinicName: clinic.name,
+      },
+      { new: true }  // return the updated document
+    ).select("-password");
+
+    res.status(201).json({
+      success:    true,
+      message:    "Clinic registered successfully.",
+      clinic:     { id: clinic._id, name: clinic.name },
+      // Return full user so frontend can update localStorage
+      user: {
+        id:              updatedUser._id,
+        fullName:        updatedUser.fullName,
+        email:           updatedUser.email,
+        role:            updatedUser.role,
+        avatarUrl:       updatedUser.avatarUrl,
+        profileComplete: updatedUser.profileComplete,
+        clinicId:        updatedUser.clinicId,
+        clinicName:      updatedUser.clinicName,
+      },
+    });
+  } catch (error) {
+    console.error("Clinic register error:", error);
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+});
+
 // ─────────────────────────────────────────────
 // ADMIN ROUTES — require admin token
 // ─────────────────────────────────────────────
