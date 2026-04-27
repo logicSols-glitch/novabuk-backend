@@ -17,7 +17,7 @@ router.get("/", async (req, res) => {
     // Search by clinic name or city
     if (search) {
       filter.$or = [
-        { name:          { $regex: search, $options: "i" } },
+        { name: { $regex: search, $options: "i" } },
         { "location.city": { $regex: search, $options: "i" } },
         { "location.address": { $regex: search, $options: "i" } },
       ];
@@ -98,13 +98,13 @@ router.post("/seed", async (req, res) => {
         contactEmail: "luth@health.ng",
         isOpen: true,
         openingHours: {
-          monday:    { open: "08:00", close: "17:00" },
-          tuesday:   { open: "08:00", close: "17:00" },
+          monday: { open: "08:00", close: "17:00" },
+          tuesday: { open: "08:00", close: "17:00" },
           wednesday: { open: "08:00", close: "17:00" },
-          thursday:  { open: "08:00", close: "17:00" },
-          friday:    { open: "08:00", close: "17:00" },
-          saturday:  { open: "09:00", close: "14:00" },
-          sunday:    { open: null, close: null },
+          thursday: { open: "08:00", close: "17:00" },
+          friday: { open: "08:00", close: "17:00" },
+          saturday: { open: "09:00", close: "14:00" },
+          sunday: { open: null, close: null },
         },
         services: ["General Practice", "Lab Tests", "Pharmacy", "Emergency"],
       },
@@ -120,13 +120,13 @@ router.post("/seed", async (req, res) => {
         contactEmail: "campus@novabuk.com",
         isOpen: true,
         openingHours: {
-          monday:    { open: "07:00", close: "19:00" },
-          tuesday:   { open: "07:00", close: "19:00" },
+          monday: { open: "07:00", close: "19:00" },
+          tuesday: { open: "07:00", close: "19:00" },
           wednesday: { open: "07:00", close: "19:00" },
-          thursday:  { open: "07:00", close: "19:00" },
-          friday:    { open: "07:00", close: "19:00" },
-          saturday:  { open: "08:00", close: "16:00" },
-          sunday:    { open: "10:00", close: "14:00" },
+          thursday: { open: "07:00", close: "19:00" },
+          friday: { open: "07:00", close: "19:00" },
+          saturday: { open: "08:00", close: "16:00" },
+          sunday: { open: "10:00", close: "14:00" },
         },
         services: ["General Practice", "Mental Health", "Prescriptions"],
       },
@@ -142,13 +142,13 @@ router.post("/seed", async (req, res) => {
         contactEmail: "abuja@novabuk.com",
         isOpen: false,
         openingHours: {
-          monday:    { open: "08:00", close: "18:00" },
-          tuesday:   { open: "08:00", close: "18:00" },
+          monday: { open: "08:00", close: "18:00" },
+          tuesday: { open: "08:00", close: "18:00" },
           wednesday: { open: "08:00", close: "18:00" },
-          thursday:  { open: "08:00", close: "18:00" },
-          friday:    { open: "08:00", close: "18:00" },
-          saturday:  { open: null, close: null },
-          sunday:    { open: null, close: null },
+          thursday: { open: "08:00", close: "18:00" },
+          friday: { open: "08:00", close: "18:00" },
+          saturday: { open: null, close: null },
+          sunday: { open: null, close: null },
         },
         services: ["General Practice", "Dental", "Eye Care", "Lab Tests"],
       },
@@ -169,53 +169,186 @@ module.exports = router;
 
 // ─────────────────────────────────────────────
 
-// ─────────────────────────────────────────────────────────────
-// GET /api/clinics/my  — doctor fetches their own clinic
-// PATCH /api/clinics/my — doctor edits their own clinic
-// Both protected by authDoctor (role === "Doctors")
-// ─────────────────────────────────────────────────────────────
-const { protectDoctor } = require("../middleware/authDoctor");
+// ═══════════════════════════════════════════════════════════════
+// DOCTOR SELF-SERVICE ROUTES
+// Protected by authDoctor (role === "Doctors")
+// No admin needed — doctors manage their own clinic.
+// ═══════════════════════════════════════════════════════════════
+const { protectDoctor } = require("../middleware/authDoctor.js");
 const User = require("../models/User");
 
+// ─────────────────────────────────────────────────────────────
+// POST /api/clinics/register
+// Called from clinic-register.html after doctor signs up.
+// Creates the clinic document AND links it back to the doctor's
+// User record in one atomic sequence.
+// Body: { name, address, city, state?, phone, email?, services? }
+// ─────────────────────────────────────────────────────────────
+router.post("/register", protectDoctor, async (req, res) => {
+  try {
+    const { name, address, city, state, phone, email, services } = req.body;
+
+    if (!name || !address || !city || !phone) {
+      return res.status(400).json({
+        success: false,
+        message: "Clinic name, address, city and phone are required.",
+      });
+    }
+
+    // Prevent creating a second clinic if one already exists
+    if (req.user.clinicId) {
+      return res.status(400).json({
+        success: false,
+        message: "You already have a clinic registered.",
+        clinicId: req.user.clinicId,
+      });
+    }
+
+    // Create the clinic
+    const clinic = await Clinic.create({
+      name: name.trim(),
+      location: {
+        address: address.trim(),
+        city: city.trim(),
+        state: state?.trim() || "",
+      },
+      contactPhone: phone.trim(),
+      contactEmail: email?.trim() || "",
+      services: Array.isArray(services) ? services : [],
+      isOpen: true,
+      isActive: true,
+    });
+
+    // Link clinic back to the doctor's User document
+    const updatedUser = await User.findByIdAndUpdate(
+      req.user._id,
+      { clinicId: clinic._id, clinicName: clinic.name },
+      { new: true },
+    ).select("-password");
+
+    // Send welcome email to doctor (non-blocking)
+    const { sendDoctorWelcomeEmail } = require("../services/emailService");
+    sendDoctorWelcomeEmail({
+      to: req.user.email,
+      doctorName: req.user.fullName,
+      clinicName: clinic.name,
+    }).catch((err) =>
+      console.error("Doctor welcome email failed:", err.message),
+    );
+
+    res.status(201).json({
+      success: true,
+      message: "Clinic registered successfully.",
+      clinic: { id: clinic._id, name: clinic.name },
+      // Return full user so frontend can update localStorage immediately
+      user: {
+        id: updatedUser._id,
+        fullName: updatedUser.fullName,
+        email: updatedUser.email,
+        role: updatedUser.role,
+        avatarUrl: updatedUser.avatarUrl,
+        profileComplete: updatedUser.profileComplete,
+        clinicId: updatedUser.clinicId,
+        clinicName: updatedUser.clinicName,
+      },
+    });
+  } catch (error) {
+    console.error("Clinic register error:", error);
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// GET /api/clinics/my
+// Doctor fetches their own clinic to pre-fill settings form.
+// ─────────────────────────────────────────────────────────────
 router.get("/my", protectDoctor, async (req, res) => {
   try {
     if (!req.user.clinicId) {
-      return res.status(400).json({ success: false, message: "No clinic linked to your account." });
+      return res.status(400).json({
+        success: false,
+        message: "No clinic linked to your account.",
+      });
     }
     const clinic = await Clinic.findById(req.user.clinicId);
-    if (!clinic) return res.status(404).json({ success: false, message: "Clinic not found." });
+    if (!clinic) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Clinic not found." });
+    }
     res.json({ success: true, clinic });
   } catch (error) {
     res.status(500).json({ success: false, message: "Server error." });
   }
 });
 
+// ─────────────────────────────────────────────────────────────
+// PATCH /api/clinics/my
+// Doctor updates their own clinic profile from settings page.
+// Only updates fields that were sent — others untouched.
+// ─────────────────────────────────────────────────────────────
 router.patch("/my", protectDoctor, async (req, res) => {
   try {
     if (!req.user.clinicId) {
-      return res.status(400).json({ success: false, message: "No clinic linked to your account." });
+      return res.status(400).json({
+        success: false,
+        message: "No clinic linked to your account.",
+      });
     }
-    const { name, address, city, state, phone, email, services, image, isOpen } = req.body;
+
+    const {
+      name,
+      address,
+      city,
+      state,
+      phone,
+      email,
+      services,
+      image,
+      isOpen,
+    } = req.body;
+
     const updates = {};
-    if (name    !== undefined) updates.name                 = name;
-    if (address !== undefined) updates["location.address"]  = address;
-    if (city    !== undefined) updates["location.city"]     = city;
-    if (state   !== undefined) updates["location.state"]    = state;
-    if (phone   !== undefined) updates.contactPhone         = phone;
-    if (email   !== undefined) updates.contactEmail         = email;
-    if (services!== undefined) updates.services             = services;
-    if (image   !== undefined) updates.image                = image;
-    if (isOpen  !== undefined) updates.isOpen               = isOpen;
+    if (name !== undefined) updates.name = name;
+    if (address !== undefined) updates["location.address"] = address;
+    if (city !== undefined) updates["location.city"] = city;
+    if (state !== undefined) updates["location.state"] = state;
+    if (phone !== undefined) updates.contactPhone = phone;
+    if (email !== undefined) updates.contactEmail = email;
+    if (services !== undefined) updates.services = services;
+    if (image !== undefined) updates.image = image;
+    if (isOpen !== undefined) updates.isOpen = isOpen;
 
-    const clinic = await Clinic.findByIdAndUpdate(req.user.clinicId, updates, { new: true, runValidators: true });
-    if (!clinic) return res.status(404).json({ success: false, message: "Clinic not found." });
+    const clinic = await Clinic.findByIdAndUpdate(req.user.clinicId, updates, {
+      new: true,
+      runValidators: true,
+    });
 
-    // Keep clinicName in sync on the User document if name changed
+    if (!clinic) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Clinic not found." });
+    }
+
+    // Keep clinicName in sync on User if name changed
     if (name && name !== req.user.clinicName) {
       await User.findByIdAndUpdate(req.user._id, { clinicName: clinic.name });
     }
 
-    res.json({ success: true, message: "Clinic profile updated.", clinic });
+    res.json({
+      success: true,
+      message: "Clinic profile updated.",
+      clinic: {
+        id: clinic._id,
+        name: clinic.name,
+        location: clinic.location,
+        contactPhone: clinic.contactPhone,
+        contactEmail: clinic.contactEmail,
+        services: clinic.services,
+        image: clinic.image,
+        isOpen: clinic.isOpen,
+      },
+    });
   } catch (error) {
     console.error("Clinic update error:", error);
     res.status(500).json({ success: false, message: "Server error." });
@@ -230,7 +363,9 @@ const { protectAdmin } = require("../middleware/auth");
 router.post("/", protectAdmin, async (req, res) => {
   try {
     const clinic = await Clinic.create(req.body);
-    res.status(201).json({ success: true, message: "Clinic added.", data: clinic });
+    res
+      .status(201)
+      .json({ success: true, message: "Clinic added.", data: clinic });
   } catch (error) {
     console.error("Add clinic error:", error);
     res.status(500).json({ success: false, message: "Server error." });
@@ -240,8 +375,14 @@ router.post("/", protectAdmin, async (req, res) => {
 // PUT /api/clinics/:id — edit clinic
 router.put("/:id", protectAdmin, async (req, res) => {
   try {
-    const clinic = await Clinic.findByIdAndUpdate(req.params.id, req.body, { new: true, runValidators: true });
-    if (!clinic) return res.status(404).json({ success: false, message: "Clinic not found." });
+    const clinic = await Clinic.findByIdAndUpdate(req.params.id, req.body, {
+      new: true,
+      runValidators: true,
+    });
+    if (!clinic)
+      return res
+        .status(404)
+        .json({ success: false, message: "Clinic not found." });
     res.json({ success: true, message: "Clinic updated.", data: clinic });
   } catch (error) {
     console.error("Update clinic error:", error);
@@ -253,10 +394,17 @@ router.put("/:id", protectAdmin, async (req, res) => {
 router.delete("/:id", protectAdmin, async (req, res) => {
   try {
     const clinic = await Clinic.findById(req.params.id);
-    if (!clinic) return res.status(404).json({ success: false, message: "Clinic not found." });
+    if (!clinic)
+      return res
+        .status(404)
+        .json({ success: false, message: "Clinic not found." });
     clinic.isActive = !clinic.isActive;
     await clinic.save();
-    res.json({ success: true, message: `Clinic ${clinic.isActive ? "activated" : "deactivated"}.`, data: clinic });
+    res.json({
+      success: true,
+      message: `Clinic ${clinic.isActive ? "activated" : "deactivated"}.`,
+      data: clinic,
+    });
   } catch (error) {
     res.status(500).json({ success: false, message: "Server error." });
   }
@@ -266,9 +414,20 @@ router.delete("/:id", protectAdmin, async (req, res) => {
 router.patch("/:id/toggle", protectAdmin, async (req, res) => {
   try {
     const { isOpen } = req.body;
-    const clinic = await Clinic.findByIdAndUpdate(req.params.id, { isOpen }, { new: true });
-    if (!clinic) return res.status(404).json({ success: false, message: "Clinic not found." });
-    res.json({ success: true, message: `Clinic is now ${isOpen ? "Open" : "Closed"}.`, data: clinic });
+    const clinic = await Clinic.findByIdAndUpdate(
+      req.params.id,
+      { isOpen },
+      { new: true },
+    );
+    if (!clinic)
+      return res
+        .status(404)
+        .json({ success: false, message: "Clinic not found." });
+    res.json({
+      success: true,
+      message: `Clinic is now ${isOpen ? "Open" : "Closed"}.`,
+      data: clinic,
+    });
   } catch (error) {
     res.status(500).json({ success: false, message: "Server error." });
   }

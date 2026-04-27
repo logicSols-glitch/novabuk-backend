@@ -31,6 +31,11 @@ app.use(
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// cookie-parser lets us read req.cookies — needed for any
+// HttpOnly cookie auth. Run: npm install cookie-parser
+const cookieParser = require("cookie-parser");
+app.use(cookieParser());
+
 // ── DATABASE ──────────────────────────────────────────────
 const connectDB = async () => {
   try {
@@ -61,10 +66,10 @@ app.use("/api/reviews",   require("./routes/reviews"));   // clinic reviews
 app.use("/api/contact",   require("./routes/contact"));   // contact form
 
 // ── ROUTES — clinic portal ───────────────────────────────
-// Doctors use same novabuk_token JWT from sign-in
-// authDoctor middleware checks role === "Doctors"
-const cookieParser = require("cookie-parser");
-app.use(cookieParser());
+// Doctors use the same novabuk_token JWT from sign-in
+// authDoctor middleware (middleware/authDoctor.js) checks role === "Doctors"
+// /api/clinics/register, /api/clinics/my are in routes/clinics.js
+// /api/clinic/queue, /api/clinic/visits/* are in routes/clinic-visits.js
 app.use("/api/clinic", require("./routes/clinic-visits"));
 
 // ── HEALTH CHECK ──────────────────────────────────────────
