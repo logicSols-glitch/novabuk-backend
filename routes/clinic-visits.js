@@ -53,10 +53,12 @@ router.get("/queue", async (req, res) => {
     const baseFilter = {
       clinic: clinicId,
       $or: [
+        { status: "Pending" },
+        { status: "InProgress" },
         { preferredDate: { $gte: startOfDay, $lte: endOfDay } },
         {
           createdAt: { $gte: startOfDay, $lte: endOfDay },
-          status: { $in: ["Pending", "Confirmed", "InProgress"] },
+          status: "Confirmed",
         },
       ],
     };
