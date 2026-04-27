@@ -30,10 +30,6 @@ app.use(
 // ── MIDDLEWARE ────────────────────────────────────────────
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-// cookie-parser reads req.cookies — needed for any cookie-based auth
-// Run: npm install cookie-parser
-const cookieParser = require("cookie-parser");
-app.use(cookieParser());
 
 // ── DATABASE ──────────────────────────────────────────────
 const connectDB = async () => {
@@ -65,8 +61,10 @@ app.use("/api/reviews",   require("./routes/reviews"));   // clinic reviews
 app.use("/api/contact",   require("./routes/contact"));   // contact form
 
 // ── ROUTES — clinic portal ───────────────────────────────
-// Doctors use the same User JWT from sign-in.html
-// No separate ClinicStaff collection needed.
+// Doctors use same novabuk_token JWT from sign-in
+// authDoctor middleware checks role === "Doctors"
+const cookieParser = require("cookie-parser");
+app.use(cookieParser());
 app.use("/api/clinic", require("./routes/clinic-visits"));
 
 // ── HEALTH CHECK ──────────────────────────────────────────

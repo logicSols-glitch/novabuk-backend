@@ -5,7 +5,11 @@ const Clinic = require("../models/Clinic");
 const Symptom = require("../models/Symptom");
 const User = require("../models/User");
 const { protectUser } = require("../middleware/authUser");
-const { sendVisitConfirmationEmail } = require("../services/emailService");
+const {
+  sendVisitConfirmationEmail,
+  sendDoctorNewBookingEmail,
+  sendDoctorCancellationEmail,
+} = require("../services/emailService");
 const Notification = require("../models/notification");
 
 // All visit routes require a logged-in patient
@@ -82,7 +86,7 @@ router.post("/request", async (req, res) => {
       link: "./app-history.html",
     }).catch(err => console.error("Notification create failed:", err.message));
 
-    // ── Send visit confirmation email (non-blocking) ──────
+    // ── Send visit confirmation email to PATIENT (non-blocking) ──
     const reqEmailEnabled = req.user.notificationSettings?.emailNotifications !== false;
     if (reqEmailEnabled) {
       sendVisitConfirmationEmail({
@@ -94,6 +98,30 @@ router.post("/request", async (req, res) => {
       }).catch((err) =>
         console.error("Visit confirmation email failed:", err.message)
       );
+    }
+
+    // ── Notify the DOCTOR that a new patient booked ────────
+    // Find the doctor linked to this clinic
+    const User = require("../models/User");
+    const doctor = await User.findOne({
+      role:     "Doctors",
+      clinicId: clinicId,
+      isActive: { $ne: false },
+    }).select("fullName email notificationSettings").catch(() => null);
+
+    if (doctor) {
+      const doctorEmailEnabled =
+        doctor.notificationSettings?.emailNotifications !== false;
+      if (doctorEmailEnabled) {
+        sendDoctorNewBookingEmail({
+          to:            doctor.email,
+          doctorName:    doctor.fullName,
+          patientName:   req.user.fullName,
+          clinicName:    clinic.name,
+          preferredDate: preferredDate || null,
+          notes:         notes || "",
+        }).catch(err => console.error("Doctor booking email failed:", err.message));
+      }
     }
 
     res.status(201).json({
@@ -202,7 +230,7 @@ router.patch("/:id/cancel", async (req, res) => {
       link: "./app-history.html",
     }).catch(err => console.error("Notification create failed:", err.message));
 
-    // ── Send cancellation email (non-blocking) ────────────
+    // ── Send cancellation email to PATIENT (non-blocking) ──
     const cancelEmailEnabled = req.user.notificationSettings?.emailNotifications !== false;
     if (cancelEmailEnabled) {
       sendVisitConfirmationEmail({
@@ -214,6 +242,28 @@ router.patch("/:id/cancel", async (req, res) => {
       }).catch((err) =>
         console.error("Cancellation email failed:", err.message)
       );
+    }
+
+    // ── Notify the DOCTOR that this patient cancelled ──────
+    const UserModel = require("../models/User");
+    const doctorForCancel = await UserModel.findOne({
+      role:     "Doctors",
+      clinicId: visit.clinic._id,
+      isActive: { $ne: false },
+    }).select("fullName email notificationSettings").catch(() => null);
+
+    if (doctorForCancel) {
+      const dCancelEmailEnabled =
+        doctorForCancel.notificationSettings?.emailNotifications !== false;
+      if (dCancelEmailEnabled) {
+        sendDoctorCancellationEmail({
+          to:            doctorForCancel.email,
+          doctorName:    doctorForCancel.fullName,
+          patientName:   req.user.fullName,
+          clinicName:    visit.clinic.name,
+          preferredDate: visit.preferredDate,
+        }).catch(err => console.error("Doctor cancel email failed:", err.message));
+      }
     }
 
     res.json({

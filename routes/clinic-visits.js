@@ -237,6 +237,9 @@ router.patch("/visits/:id/complete", async (req, res) => {
         clinicName:    visit.clinic?.name || "the clinic",
         status:        "Completed",
         preferredDate: visit.preferredDate,
+        // Include notes so they appear in the patient email
+        diagnosis:     visit.diagnosis || "",
+        advice:        visit.advice    || "",
       }).catch(() => {});
     }
 

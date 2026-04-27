@@ -1,213 +1,148 @@
-/**
- * NovaBuk Email Service
- * ─────────────────────────────────────────────────────────
- * Currently uses Resend (resend.com).
- *
- * TO SWITCH TO SENDGRID LATER:
- *   1. npm install @sendgrid/mail
- *   2. Replace the sendEmail function below with the SendGrid version
- *   3. Update .env: replace RESEND_API_KEY with SENDGRID_API_KEY
- *   4. Nothing else changes — all routes call sendEmail() the same way
- * ─────────────────────────────────────────────────────────
- */
-
 const { Resend } = require("resend");
 
-const resend = new Resend(process.env.RESEND_API_KEY);
-// const FROM_EMAIL = "NovaBuk <onboarding@resend.dev>";
+const resend     = new Resend(process.env.RESEND_API_KEY);
 const FROM_EMAIL = process.env.FROM_EMAIL || "NovaBuk <noreply@novabuk.com>";
-const APP_NAME = "NovaBuk";
+const APP_NAME   = "NovaBuk";
+const FRONTEND   = process.env.FRONTEND_URL || "https://novabuk.vercel.app";
 
-/**
- * Core send function — all emails go through here.
- * To switch providers, only edit this function.
- */
 const sendEmail = async ({ to, subject, html }) => {
-  const { data, error } = await resend.emails.send({
-    from: FROM_EMAIL,
-    to,
-    subject,
-    html,
-  });
-
-  if (error) {
-    console.error("Email send error:", error);
-    throw new Error(error.message || "Failed to send email");
-  }
-
+  const { data, error } = await resend.emails.send({ from: FROM_EMAIL, to, subject, html });
+  if (error) { console.error("Email send error:", error); throw new Error(error.message); }
   return data;
 };
 
-/* ── SENDGRID VERSION (commented out — swap in when ready) ──
-const sgMail = require("@sendgrid/mail");
-sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+const wrap = (body) => `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
+<body style="margin:0;padding:0;background:#f0f4f8;font-family:Poppins,Arial,sans-serif;">
+<div style="max-width:560px;margin:40px auto;background:white;border-radius:16px;overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,0.08);">
+<div style="background:linear-gradient(135deg,#7ecad7,#35bac9);padding:28px 40px;">
+<h1 style="margin:0;color:white;font-size:22px;font-weight:700;">${APP_NAME}</h1>
+<p style="margin:4px 0 0;color:rgba(255,255,255,0.75);font-size:12px;">Empowering Africa's Healthcare</p>
+</div>
+<div style="padding:36px 40px;">${body}</div>
+<div style="background:#f8f9fa;padding:18px 40px;border-top:1px solid #eee;text-align:center;">
+<p style="margin:0;color:#aaa;font-size:11px;line-height:1.6;">© ${new Date().getFullYear()} ${APP_NAME} HealthTech. All rights reserved.<br/>${APP_NAME} does not replace professional medical advice.</p>
+</div></div></body></html>`;
 
-─────────────────────────────────────────────────────────── */
+const badge = (s) => {
+  const c = { Pending:{bg:"#fff3cd",t:"#856404"}, Confirmed:{bg:"#d1ecf1",t:"#0c5460"}, Completed:{bg:"#d4edda",t:"#155724"}, Cancelled:{bg:"#f8d7da",t:"#721c24"} }[s] || {bg:"#eee",t:"#333"};
+  return `<span style="display:inline-block;background:${c.bg};color:${c.t};padding:4px 12px;border-radius:20px;font-size:12px;font-weight:600;">${s}</span>`;
+};
 
-// ── EMAIL TEMPLATES ───────────────────────────────────────
+const ctaBtn = (text, url) => `<div style="margin-top:24px;"><a href="${url}" style="display:inline-block;background:linear-gradient(135deg,#7ecad7,#35bac9);color:white;text-decoration:none;padding:13px 30px;border-radius:8px;font-weight:600;font-size:14px;">${text}</a></div>`;
 
-/**
- * Password reset email
- */
+// ── PATIENT EMAILS ───────────────────────────────────────────
+
 const sendPasswordResetEmail = async ({ to, name, resetUrl }) => {
-  const subject = `Reset your ${APP_NAME} password`;
-
-  const html = `
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <meta charset="UTF-8">
-      <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    </head>
-    <body style="margin:0;padding:0;background:#f0f4f8;font-family:Poppins,Arial,sans-serif;">
-      <div style="max-width:560px;margin:40px auto;background:white;border-radius:16px;overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,0.08);">
-        
-        <!-- Header -->
-        <div style="background:linear-gradient(135deg,#7ecad7,#35bac9);padding:32px 40px;text-align:center;">
-          <h1 style="margin:0;color:white;font-size:24px;font-weight:700;">${APP_NAME}</h1>
-          <p style="margin:6px 0 0;color:rgba(255,255,255,0.85);font-size:13px;">Digital Health Platform</p>
-        </div>
-
-        <!-- Body -->
-        <div style="padding:40px;">
-          <h2 style="margin:0 0 12px;color:#1a1a1a;font-size:20px;">Reset your password</h2>
-          <p style="color:#555;line-height:1.6;margin:0 0 24px;">
-            Hi ${name}, we received a request to reset your ${APP_NAME} password.
-            Click the button below to choose a new one.
-          </p>
-
-          <div style="text-align:center;margin:32px 0;">
-            <a href="${resetUrl}"
-               style="display:inline-block;background:linear-gradient(135deg,#7ecad7,#35bac9);
-                color:white;text-decoration:none;padding:14px 36px;
-                border-radius:8px;font-weight:600;font-size:15px;">
-              Reset Password
-            </a>
-          </div>
-
-          <p style="color:#888;font-size:13px;line-height:1.6;margin:0 0 8px;">
-            This link expires in <strong>1 hour</strong>. If you didn't request a password reset,
-            you can safely ignore this email — your password won't change.
-          </p>
-
-          <p style="color:#aaa;font-size:12px;margin:0;">
-            Or copy this link into your browser:<br>
-            <span style="color:#35bac9;word-break:break-all;">${resetUrl}</span>
-          </p>
-        </div>
-
-        <!-- Footer -->
-        <div style="background:#f8f9fa;padding:20px 40px;border-top:1px solid #eee;text-align:center;">
-          <p style="margin:0;color:#aaa;font-size:12px;">
-            © 2025 ${APP_NAME} HealthTech. All rights reserved.<br>
-            NovaBuk does not replace professional medical advice.
-          </p>
-        </div>
-      </div>
-    </body>
-    </html>
-  `;
-
-  return sendEmail({ to, subject, html });
+  const html = wrap(`
+    <h2 style="margin:0 0 8px;color:#1a1a1a;font-size:20px;">Reset your password</h2>
+    <p style="color:#555;line-height:1.7;margin:0 0 24px;">Hi ${name}, click below to reset your password. This link expires in <strong>1 hour</strong>.</p>
+    ${ctaBtn("Reset Password", resetUrl)}
+    <p style="color:#aaa;font-size:12px;margin-top:20px;">If you didn't request this, ignore this email.</p>
+  `);
+  return sendEmail({ to, subject: `Reset your ${APP_NAME} password`, html });
 };
 
-/**
- * Welcome email sent after successful registration
- */
 const sendWelcomeEmail = async ({ to, name }) => {
-  const subject = `Welcome to ${APP_NAME} `;
-
-  const html = `
-    <!DOCTYPE html>
-    <html>
-    <body style="margin:0;padding:0;background:#f0f4f8;font-family:Poppins,Arial,sans-serif;">
-      <div style="max-width:560px;margin:40px auto;background:white;border-radius:16px;overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,0.08);">
-        
-        <div style="background:linear-gradient(135deg,#7ecad7,#35bac9);padding:32px 40px;text-align:center;">
-          <h1 style="margin:0;color:white;font-size:24px;font-weight:700;">${APP_NAME}</h1>
-          <p style="margin:6px 0 0;color:rgba(255,255,255,0.85);font-size:13px;">Digital Health Platform</p>
-        </div>
-
-        <div style="padding:40px;">
-          <h2 style="margin:0 0 12px;color:#1a1a1a;font-size:20px;">Welcome, ${name}! </h2>
-          <p style="color:#555;line-height:1.6;margin:0 0 20px;">
-            Your ${APP_NAME} account is ready. You can now log your symptoms,
-            find nearby clinics, and manage your health — all in one place.
-          </p>
-          <p style="color:#888;font-size:13px;line-height:1.6;">
-            ${APP_NAME} does not replace professional medical advice. 
-            Always consult a qualified healthcare provider for medical decisions.
-          </p>
-        </div>
-
-        <div style="background:#f8f9fa;padding:20px 40px;border-top:1px solid #eee;text-align:center;">
-          <p style="margin:0;color:#aaa;font-size:12px;">
-            © 2025 ${APP_NAME} HealthTech. All rights reserved.
-          </p>
-        </div>
-      </div>
-    </body>
-    </html>
-  `;
-
-  return sendEmail({ to, subject, html });
+  const html = wrap(`
+    <h2 style="margin:0 0 8px;color:#1a1a1a;font-size:20px;">Welcome to ${APP_NAME}, ${name}! 👋</h2>
+    <p style="color:#555;line-height:1.7;margin:0 0 20px;">Your account is ready. Log symptoms, find clinics, and manage your health records — all in one place.</p>
+    <div style="background:#e8f8fb;border-radius:10px;padding:18px 20px;margin-bottom:20px;">
+      <p style="margin:0 0 10px;font-weight:600;color:#0f2027;font-size:14px;">Get started:</p>
+      <p style="margin:4px 0;color:#4a5568;font-size:13px;">✅ Complete your health profile</p>
+      <p style="margin:4px 0;color:#4a5568;font-size:13px;">✅ Log your first symptoms</p>
+      <p style="margin:4px 0;color:#4a5568;font-size:13px;">✅ Find and book a nearby clinic</p>
+    </div>
+    ${ctaBtn("Open NovaBuk", `${FRONTEND}/app-home.html`)}
+  `);
+  return sendEmail({ to, subject: `Welcome to ${APP_NAME}!`, html });
 };
 
-/**
- * Visit request confirmation to patient
- */
-const sendVisitConfirmationEmail = async ({ to, name, clinicName, status, preferredDate }) => {
-  const subject = `Your visit request — ${clinicName}`;
+const sendVisitConfirmationEmail = async ({ to, name, clinicName, status, preferredDate, diagnosis, advice }) => {
+  const dateStr = preferredDate
+    ? new Date(preferredDate).toLocaleDateString("en-NG", { weekday:"long", day:"numeric", month:"long", year:"numeric" })
+    : null;
 
-  const statusColor = {
-    Pending:   "#f39c12",
-    Confirmed: "#27ae60",
-    Cancelled: "#e74c3c",
-    Completed: "#35bac9",
-  }[status] || "#35bac9";
+  const msgs = {
+    Pending:   { h:"Visit Request Submitted",    b:`Your request to <strong>${clinicName}</strong> has been submitted. The clinic will confirm shortly.`, ctaT:"View My Visits", cta:`${FRONTEND}/app-history.html` },
+    Confirmed: { h:"Your Visit is Confirmed ✓",  b:`<strong>${clinicName}</strong> has confirmed your visit.${dateStr?` Please arrive on <strong>${dateStr}</strong>.`:""}`, ctaT:"View Details", cta:`${FRONTEND}/app-history.html` },
+    Completed: { h:"Consultation Complete",       b:`Your visit at <strong>${clinicName}</strong> is complete. Your notes are now available.${diagnosis?`<br/><br/><strong>Diagnosis:</strong> ${diagnosis}`:""}${advice?`<br/><strong>Advice:</strong> ${advice}`:""}`, ctaT:"View My Notes", cta:`${FRONTEND}/app-history.html` },
+    Cancelled: { h:"Visit Cancelled",             b:`Your visit to <strong>${clinicName}</strong> was cancelled. Book again when you're ready.`, ctaT:"Book Again", cta:`${FRONTEND}/app-clinics.html` },
+  };
 
-  const html = `
-    <!DOCTYPE html>
-    <html>
-    <body style="margin:0;padding:0;background:#f0f4f8;font-family:Poppins,Arial,sans-serif;">
-      <div style="max-width:560px;margin:40px auto;background:white;border-radius:16px;overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,0.08);">
-        
-        <div style="background:linear-gradient(135deg,#7ecad7,#35bac9);padding:32px 40px;text-align:center;">
-          <h1 style="margin:0;color:white;font-size:24px;font-weight:700;">${APP_NAME}</h1>
-        </div>
+  const m = msgs[status];
+  if (!m) return;
 
-        <div style="padding:40px;">
-          <h2 style="margin:0 0 12px;color:#1a1a1a;font-size:20px;">Visit Request Update</h2>
-          <p style="color:#555;line-height:1.6;margin:0 0 24px;">Hi ${name},</p>
+  const subjects = { Pending:`Visit request — ${clinicName}`, Confirmed:`Your visit at ${clinicName} is confirmed ✓`, Completed:`Consultation complete — ${clinicName}`, Cancelled:`Visit at ${clinicName} cancelled` };
 
-          <div style="background:#f8f9fa;border-radius:10px;padding:20px;margin-bottom:24px;">
-            <p style="margin:0 0 8px;color:#888;font-size:13px;">CLINIC</p>
-            <p style="margin:0 0 16px;color:#1a1a1a;font-weight:600;">${clinicName}</p>
-            <p style="margin:0 0 8px;color:#888;font-size:13px;">STATUS</p>
-            <span style="display:inline-block;background:${statusColor};color:white;
-                padding:4px 14px;border-radius:20px;font-size:13px;font-weight:600;">
-              ${status}
-            </span>
-            ${preferredDate ? `
-            <p style="margin:16px 0 4px;color:#888;font-size:13px;">PREFERRED DATE</p>
-            <p style="margin:0;color:#1a1a1a;">${new Date(preferredDate).toLocaleDateString("en-NG", { weekday:"long", year:"numeric", month:"long", day:"numeric" })}</p>
-            ` : ""}
-          </div>
+  const html = wrap(`
+    <p style="color:#718096;font-size:13px;margin:0 0 4px;">Hi ${name},</p>
+    <h2 style="margin:0 0 16px;color:#1a1a1a;font-size:20px;">${m.h}</h2>
+    <div style="background:#f8fafc;border-left:4px solid #35bac9;border-radius:0 8px 8px 0;padding:14px 16px;margin-bottom:20px;">
+      <p style="margin:0;color:#4a5568;line-height:1.7;font-size:14px;">${m.b}</p>
+    </div>
+    <table style="width:100%;border-collapse:collapse;margin-bottom:8px;">
+      <tr><td style="padding:8px 0;border-bottom:1px solid #f5f5f5;color:#aaa;font-size:11px;text-transform:uppercase;letter-spacing:.5px;width:100px;">Clinic</td><td style="padding:8px 0;border-bottom:1px solid #f5f5f5;font-weight:600;color:#0f2027;font-size:13px;">${clinicName}</td></tr>
+      ${dateStr?`<tr><td style="padding:8px 0;border-bottom:1px solid #f5f5f5;color:#aaa;font-size:11px;text-transform:uppercase;letter-spacing:.5px;">Date</td><td style="padding:8px 0;border-bottom:1px solid #f5f5f5;color:#0f2027;font-size:13px;">${dateStr}</td></tr>`:""}
+      <tr><td style="padding:8px 0;color:#aaa;font-size:11px;text-transform:uppercase;letter-spacing:.5px;">Status</td><td style="padding:8px 0;">${badge(status)}</td></tr>
+    </table>
+    ${ctaBtn(m.ctaT, m.cta)}
+  `);
+  return sendEmail({ to, subject: subjects[status], html });
+};
 
-          <p style="color:#888;font-size:13px;line-height:1.6;">
-            Log in to your ${APP_NAME} account to view full details or cancel this request.
-          </p>
-        </div>
+// ── DOCTOR / CLINIC EMAILS ───────────────────────────────────
 
-        <div style="background:#f8f9fa;padding:20px 40px;border-top:1px solid #eee;text-align:center;">
-          <p style="margin:0;color:#aaa;font-size:12px;">© 2025 ${APP_NAME} HealthTech. All rights reserved.</p>
-        </div>
-      </div>
-    </body>
-    </html>
-  `;
+const sendDoctorWelcomeEmail = async ({ to, doctorName, clinicName }) => {
+  const html = wrap(`
+    <h2 style="margin:0 0 8px;color:#1a1a1a;font-size:20px;">Your clinic is live, Dr. ${doctorName}! 🎉</h2>
+    <p style="color:#555;line-height:1.7;margin:0 0 20px;"><strong>${clinicName}</strong> is now on ${APP_NAME}. Patients can find you, book appointments, and receive consultation notes digitally.</p>
+    <div style="background:#e8f8fb;border-radius:10px;padding:18px 20px;margin-bottom:20px;">
+      <p style="margin:0 0 12px;font-weight:600;color:#0f2027;font-size:14px;">What happens now:</p>
+      <p style="margin:4px 0;color:#4a5568;font-size:13px;">🔔 You'll get an email every time a patient books</p>
+      <p style="margin:4px 0;color:#4a5568;font-size:13px;">📋 Your queue refreshes every 30 seconds automatically</p>
+      <p style="margin:4px 0;color:#4a5568;font-size:13px;">💊 Consultation notes go to the patient on completion</p>
+      <p style="margin:4px 0;color:#4a5568;font-size:13px;">✏️ Update clinic info and photos from Settings</p>
+    </div>
+    ${ctaBtn("Open My Queue", `${FRONTEND}/clinic-queue.html`)}
+  `);
+  return sendEmail({ to, subject: `${clinicName} is now live on ${APP_NAME}!`, html });
+};
 
-  return sendEmail({ to, subject, html });
+const sendDoctorNewBookingEmail = async ({ to, doctorName, patientName, clinicName, preferredDate, notes }) => {
+  const dateStr = preferredDate
+    ? new Date(preferredDate).toLocaleDateString("en-NG", { weekday:"long", day:"numeric", month:"long", year:"numeric" })
+    : "Date not specified";
+  const html = wrap(`
+    <div style="background:#e8f8fb;border-radius:10px;padding:14px 18px;margin-bottom:24px;">
+      <p style="margin:0;font-weight:600;color:#0c5460;font-size:14px;">🔔 New Patient Booking — ${clinicName}</p>
+    </div>
+    <p style="color:#718096;font-size:13px;margin:0 0 4px;">Hi Dr. ${doctorName},</p>
+    <h2 style="margin:0 0 18px;color:#1a1a1a;font-size:20px;">A new patient has booked a visit</h2>
+    <table style="width:100%;border-collapse:collapse;margin-bottom:20px;">
+      <tr><td style="padding:10px 0;border-bottom:1px solid #f5f5f5;color:#aaa;font-size:11px;text-transform:uppercase;letter-spacing:.5px;width:120px;">Patient</td><td style="padding:10px 0;border-bottom:1px solid #f5f5f5;font-weight:600;color:#0f2027;">${patientName}</td></tr>
+      <tr><td style="padding:10px 0;border-bottom:1px solid #f5f5f5;color:#aaa;font-size:11px;text-transform:uppercase;letter-spacing:.5px;">Preferred Date</td><td style="padding:10px 0;border-bottom:1px solid #f5f5f5;color:#0f2027;">${dateStr}</td></tr>
+      <tr><td style="padding:10px 0;border-bottom:1px solid #f5f5f5;color:#aaa;font-size:11px;text-transform:uppercase;letter-spacing:.5px;">Reason</td><td style="padding:10px 0;border-bottom:1px solid #f5f5f5;color:#0f2027;">${notes || "Not specified"}</td></tr>
+      <tr><td style="padding:10px 0;color:#aaa;font-size:11px;text-transform:uppercase;letter-spacing:.5px;">Status</td><td style="padding:10px 0;">${badge("Pending")}</td></tr>
+    </table>
+    ${ctaBtn("Open Clinic Queue", `${FRONTEND}/clinic-queue.html`)}
+  `);
+  return sendEmail({ to, subject: `New booking: ${patientName} — ${clinicName}`, html });
+};
+
+const sendDoctorCancellationEmail = async ({ to, doctorName, patientName, clinicName, preferredDate }) => {
+  const dateStr = preferredDate
+    ? new Date(preferredDate).toLocaleDateString("en-NG", { weekday:"long", day:"numeric", month:"long", year:"numeric" })
+    : "the scheduled date";
+  const html = wrap(`
+    <div style="background:#fff5f5;border-radius:10px;padding:14px 18px;margin-bottom:24px;">
+      <p style="margin:0;font-weight:600;color:#721c24;font-size:14px;">❌ Visit Cancelled by Patient — ${clinicName}</p>
+    </div>
+    <p style="color:#718096;font-size:13px;margin:0 0 4px;">Hi Dr. ${doctorName},</p>
+    <h2 style="margin:0 0 14px;color:#1a1a1a;font-size:20px;">${patientName} cancelled their visit</h2>
+    <p style="color:#555;font-size:14px;line-height:1.7;margin-bottom:20px;">The visit scheduled for <strong>${dateStr}</strong> at <strong>${clinicName}</strong> has been cancelled. No action needed — this slot is now free.</p>
+    ${ctaBtn("View Queue", `${FRONTEND}/clinic-queue.html`)}
+  `);
+  return sendEmail({ to, subject: `Cancellation: ${patientName}'s visit — ${clinicName}`, html });
 };
 
 module.exports = {
@@ -215,4 +150,7 @@ module.exports = {
   sendPasswordResetEmail,
   sendWelcomeEmail,
   sendVisitConfirmationEmail,
+  sendDoctorWelcomeEmail,
+  sendDoctorNewBookingEmail,
+  sendDoctorCancellationEmail,
 };

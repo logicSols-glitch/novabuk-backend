@@ -167,105 +167,61 @@ router.post("/seed", async (req, res) => {
 
 module.exports = router;
 
+// ─────────────────────────────────────────────
 
-// ─────────────────────────────────────────────
-// POST /api/clinics/register
-// Doctor self-registration — creates a clinic and
-// links it back to the doctor's User account.
-//
-// Why a separate route from POST /api/clinics?
-//   POST /api/clinics requires protectAdmin (system admin only).
-//   This route requires protectDoctor (any logged-in Doctor).
-//   Doctors should be able to register their own clinic
-//   without needing an admin to do it for them.
-//
-// What it does in one request:
-//   1. Creates the Clinic document
-//   2. Updates the Doctor's User document with clinicId + clinicName
-//   3. Returns the updated user so the frontend can update localStorage
-//
-// Body: { name, address, city, state?, phone, email?, services? }
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// GET /api/clinics/my  — doctor fetches their own clinic
+// PATCH /api/clinics/my — doctor edits their own clinic
+// Both protected by authDoctor (role === "Doctors")
+// ─────────────────────────────────────────────────────────────
 const { protectDoctor } = require("../middleware/authDoctor");
 const User = require("../models/User");
 
-router.post("/register", protectDoctor, async (req, res) => {
+router.get("/my", protectDoctor, async (req, res) => {
   try {
-    const {
-      name,
-      address,
-      city,
-      state,
-      phone,
-      email,
-      services,
-    } = req.body;
-
-    // Validate required fields
-    if (!name || !address || !city || !phone) {
-      return res.status(400).json({
-        success: false,
-        message: "Clinic name, address, city and phone are required.",
-      });
+    if (!req.user.clinicId) {
+      return res.status(400).json({ success: false, message: "No clinic linked to your account." });
     }
-
-    // Check if this doctor already has a clinic registered
-    if (req.user.clinicId) {
-      return res.status(400).json({
-        success: false,
-        message: "You already have a clinic registered.",
-        clinicId: req.user.clinicId,
-      });
-    }
-
-    // Create the clinic
-    const clinic = await Clinic.create({
-      name: name.trim(),
-      location: {
-        address: address.trim(),
-        city:    city.trim(),
-        state:   state?.trim() || "",
-      },
-      contactPhone: phone.trim(),
-      contactEmail: email?.trim() || "",
-      services:     Array.isArray(services) ? services : [],
-      isOpen:       true,
-      isActive:     true,
-    });
-
-    // Link the clinic back to the Doctor's User document
-    const updatedUser = await User.findByIdAndUpdate(
-      req.user._id,
-      {
-        clinicId:   clinic._id,
-        clinicName: clinic.name,
-      },
-      { new: true }  // return the updated document
-    ).select("-password");
-
-    res.status(201).json({
-      success:    true,
-      message:    "Clinic registered successfully.",
-      clinic:     { id: clinic._id, name: clinic.name },
-      // Return full user so frontend can update localStorage
-      user: {
-        id:              updatedUser._id,
-        fullName:        updatedUser.fullName,
-        email:           updatedUser.email,
-        role:            updatedUser.role,
-        avatarUrl:       updatedUser.avatarUrl,
-        profileComplete: updatedUser.profileComplete,
-        clinicId:        updatedUser.clinicId,
-        clinicName:      updatedUser.clinicName,
-      },
-    });
+    const clinic = await Clinic.findById(req.user.clinicId);
+    if (!clinic) return res.status(404).json({ success: false, message: "Clinic not found." });
+    res.json({ success: true, clinic });
   } catch (error) {
-    console.error("Clinic register error:", error);
     res.status(500).json({ success: false, message: "Server error." });
   }
 });
 
-// ─────────────────────────────────────────────
+router.patch("/my", protectDoctor, async (req, res) => {
+  try {
+    if (!req.user.clinicId) {
+      return res.status(400).json({ success: false, message: "No clinic linked to your account." });
+    }
+    const { name, address, city, state, phone, email, services, image, isOpen } = req.body;
+    const updates = {};
+    if (name    !== undefined) updates.name                 = name;
+    if (address !== undefined) updates["location.address"]  = address;
+    if (city    !== undefined) updates["location.city"]     = city;
+    if (state   !== undefined) updates["location.state"]    = state;
+    if (phone   !== undefined) updates.contactPhone         = phone;
+    if (email   !== undefined) updates.contactEmail         = email;
+    if (services!== undefined) updates.services             = services;
+    if (image   !== undefined) updates.image                = image;
+    if (isOpen  !== undefined) updates.isOpen               = isOpen;
+
+    const clinic = await Clinic.findByIdAndUpdate(req.user.clinicId, updates, { new: true, runValidators: true });
+    if (!clinic) return res.status(404).json({ success: false, message: "Clinic not found." });
+
+    // Keep clinicName in sync on the User document if name changed
+    if (name && name !== req.user.clinicName) {
+      await User.findByIdAndUpdate(req.user._id, { clinicName: clinic.name });
+    }
+
+    res.json({ success: true, message: "Clinic profile updated.", clinic });
+  } catch (error) {
+    console.error("Clinic update error:", error);
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+});
+
 // ADMIN ROUTES — require admin token
 // ─────────────────────────────────────────────
 const { protectAdmin } = require("../middleware/auth");
