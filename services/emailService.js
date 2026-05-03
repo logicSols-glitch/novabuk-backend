@@ -7,7 +7,12 @@ const FRONTEND   = process.env.FRONTEND_URL || "https://novabuk.vercel.app";
 
 const sendEmail = async ({ to, subject, html }) => {
   const { data, error } = await resend.emails.send({ from: FROM_EMAIL, to, subject, html });
-  if (error) { console.error("Email send error:", error); throw new Error(error.message); }
+  if (error) { 
+    console.error("❌ Email failed for:", to);
+    console.error("❌ Resend Error Details:", JSON.stringify(error, null, 2));
+    throw new Error(error.message); 
+  }
+  console.log("✅ Email sent successfully to:", to, "(ID:", data.id, ")");
   return data;
 };
 
@@ -40,6 +45,19 @@ const sendPasswordResetEmail = async ({ to, name, resetUrl }) => {
     <p style="color:#aaa;font-size:12px;margin-top:20px;">If you didn't request this, ignore this email.</p>
   `);
   return sendEmail({ to, subject: `Reset your ${APP_NAME} password`, html });
+};
+
+const sendOTPEmail = async ({ to, name, otpCode }) => {
+  const html = wrap(`
+    <h2 style="margin:0 0 8px;color:#1a1a1a;font-size:20px;">Verify your account</h2>
+    <p style="color:#555;line-height:1.7;margin:0 0 24px;">Hi ${name}, please use the code below to complete your NovaBuk registration. This code expires in <strong>15 minutes</strong>.</p>
+    <div style="background:#f0f9fa; border: 2px dashed #35bac9; border-radius: 12px; padding: 20px; text-align: center; margin-bottom: 24px;">
+      <span style="font-size: 32px; font-weight: 700; letter-spacing: 8px; color: #35bac9;">${otpCode}</span>
+    </div>
+    <p style="color:#aaa;font-size:12px;margin-top:20px;">If you didn't request this, ignore this email.</p>
+  `);
+  console.log("OTP Sent to:", to, "Code:", otpCode);
+  return sendEmail({ to, subject: `${otpCode} is your ${APP_NAME} verification code`, html });
 };
 
 const sendWelcomeEmail = async ({ to, name }) => {
@@ -153,4 +171,5 @@ module.exports = {
   sendDoctorWelcomeEmail,
   sendDoctorNewBookingEmail,
   sendDoctorCancellationEmail,
+  sendOTPEmail,
 };

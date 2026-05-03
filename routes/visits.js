@@ -29,6 +29,21 @@ router.post("/request", async (req, res) => {
         .json({ success: false, message: "Clinic is required." });
     }
 
+    // Validation: Prevent past dates AND past times for today
+    if (preferredDate) {
+      const selectedDate = new Date(preferredDate);
+      const now = new Date();
+      
+      // We allow a small 5-minute "grace period" for network delays 
+      // but otherwise, the time must be in the future.
+      if (selectedDate < new Date(now.getTime() - 5 * 60000)) {
+        return res.status(400).json({ 
+          success: false, 
+          message: "You cannot book an appointment for a past time or date." 
+        });
+      }
+    }
+
     // Verify clinic exists and is active
     const clinic = await Clinic.findById(clinicId);
     if (!clinic || !clinic.isActive) {
@@ -103,23 +118,32 @@ router.post("/request", async (req, res) => {
     // ── Notify the DOCTOR that a new patient booked ────────
     // Find the doctor linked to this clinic
     const User = require("../models/User");
-    const doctor = await User.findOne({
-      role:     "Doctors",
+    const doctors = await User.find({
+      role: "Doctors",
       clinicId: clinicId,
       isActive: { $ne: false },
-    }).select("fullName email notificationSettings").catch(() => null);
+    });
 
-    if (doctor) {
-      const doctorEmailEnabled =
-        doctor.notificationSettings?.emailNotifications !== false;
+    for (const d of doctors) {
+      // In-app notification
+      await Notification.create({
+        user: d._id,
+        type: "visit_requested",
+        title: "New Patient Request",
+        message: `${req.user.fullName} has requested a visit.`,
+        link: "./clinic-queue.html",
+      }).catch(() => {});
+
+      // Email notification
+      const doctorEmailEnabled = d.notificationSettings?.emailNotifications !== false;
       if (doctorEmailEnabled) {
         sendDoctorNewBookingEmail({
-          to:            doctor.email,
-          doctorName:    doctor.fullName,
-          patientName:   req.user.fullName,
-          clinicName:    clinic.name,
+          to: d.email,
+          doctorName: d.fullName,
+          patientName: req.user.fullName,
+          clinicName: clinic.name,
           preferredDate: preferredDate || null,
-          notes:         notes || "",
+          notes: notes || "",
         }).catch(err => console.error("Doctor booking email failed:", err.message));
       }
     }
@@ -245,22 +269,30 @@ router.patch("/:id/cancel", async (req, res) => {
     }
 
     // ── Notify the DOCTOR that this patient cancelled ──────
-    const UserModel = require("../models/User");
-    const doctorForCancel = await UserModel.findOne({
-      role:     "Doctors",
+    const doctorsForCancel = await UserModel.find({
+      role: "Doctors",
       clinicId: visit.clinic._id,
       isActive: { $ne: false },
-    }).select("fullName email notificationSettings").catch(() => null);
+    });
 
-    if (doctorForCancel) {
-      const dCancelEmailEnabled =
-        doctorForCancel.notificationSettings?.emailNotifications !== false;
+    for (const d of doctorsForCancel) {
+      // In-app notification
+      await Notification.create({
+        user: d._id,
+        type: "visit_cancelled",
+        title: "Patient Cancelled Visit",
+        message: `${req.user.fullName} has cancelled their visit to ${visit.clinic.name}.`,
+        link: "./clinic-queue.html",
+      }).catch(() => {});
+
+      // Email notification
+      const dCancelEmailEnabled = d.notificationSettings?.emailNotifications !== false;
       if (dCancelEmailEnabled) {
         sendDoctorCancellationEmail({
-          to:            doctorForCancel.email,
-          doctorName:    doctorForCancel.fullName,
-          patientName:   req.user.fullName,
-          clinicName:    visit.clinic.name,
+          to: d.email,
+          doctorName: d.fullName,
+          patientName: req.user.fullName,
+          clinicName: visit.clinic.name,
           preferredDate: visit.preferredDate,
         }).catch(err => console.error("Doctor cancel email failed:", err.message));
       }

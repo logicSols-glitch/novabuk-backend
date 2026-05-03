@@ -2,19 +2,20 @@ const express = require("express");
 const router = express.Router();
 const Clinic = require("../models/Clinic");
 const { protectUser } = require("../middleware/authUser");
+const { protectDoctor } = require("../middleware/authDoctor.js");
+const { protectAdmin } = require("../middleware/auth");
+const User = require("../models/User");
 
 // ─────────────────────────────────────────────
 // GET /api/clinics
-// Public — list all active clinics (Screen 7)
+// Public — list all active clinics
 // ─────────────────────────────────────────────
 router.get("/", async (req, res) => {
   try {
     const { search, service, city, isOpen } = req.query;
 
-    // Build dynamic filter
     const filter = { isActive: true };
 
-    // Search by clinic name or city
     if (search) {
       filter.$or = [
         { name: { $regex: search, $options: "i" } },
@@ -23,17 +24,14 @@ router.get("/", async (req, res) => {
       ];
     }
 
-    // Filter by service offered
     if (service) {
       filter.services = { $in: [new RegExp(service, "i")] };
     }
 
-    // Filter by city
     if (city) {
       filter["location.city"] = { $regex: city, $options: "i" };
     }
 
-    // Filter by open/closed status
     if (isOpen !== undefined) {
       filter.isOpen = isOpen === "true";
     }
@@ -50,22 +48,149 @@ router.get("/", async (req, res) => {
   }
 });
 
-// ─────────────────────────────────────────────
-// GET /api/clinics/:id
-// Public — get a single clinic
-// ─────────────────────────────────────────────
-router.get("/:id", async (req, res) => {
-  try {
-    const clinic = await Clinic.findById(req.params.id);
+// ═══════════════════════════════════════════════════════════════
+// DOCTOR SELF-SERVICE ROUTES
+// IMPORTANT: These MUST come BEFORE /:id so Express does not
+// treat the string "my" or "register" as a Mongo ObjectId.
+// ═══════════════════════════════════════════════════════════════
 
-    if (!clinic || !clinic.isActive) {
+// POST /api/clinics/register
+// Called from clinic-register.html after doctor signs up.
+router.post("/register", protectDoctor, async (req, res) => {
+  try {
+    const { name, address, city, state, phone, email, services } = req.body;
+
+    if (!name || !address || !city || !phone) {
+      return res.status(400).json({
+        success: false,
+        message: "Clinic name, address, city and phone are required.",
+      });
+    }
+
+    if (req.user.clinicId) {
+      return res.status(400).json({
+        success: false,
+        message: "You already have a clinic registered.",
+        clinicId: req.user.clinicId,
+      });
+    }
+
+    const clinic = await Clinic.create({
+      name: name.trim(),
+      location: {
+        address: address.trim(),
+        city: city.trim(),
+        state: state?.trim() || "",
+      },
+      contactPhone: phone.trim(),
+      contactEmail: email?.trim() || "",
+      services: Array.isArray(services) ? services : [],
+      isOpen: true,
+      isActive: true,
+    });
+
+    const updatedUser = await User.findByIdAndUpdate(
+      req.user._id,
+      { clinicId: clinic._id, clinicName: clinic.name },
+      { new: true },
+    ).select("-password");
+
+    const { sendDoctorWelcomeEmail } = require("../services/emailService");
+    sendDoctorWelcomeEmail({
+      to: req.user.email,
+      doctorName: req.user.fullName,
+      clinicName: clinic.name,
+    }).catch((err) =>
+      console.error("Doctor welcome email failed:", err.message),
+    );
+
+    res.status(201).json({
+      success: true,
+      message: "Clinic registered successfully.",
+      clinic: { id: clinic._id, name: clinic.name },
+      user: {
+        id: updatedUser._id,
+        fullName: updatedUser.fullName,
+        email: updatedUser.email,
+        role: updatedUser.role,
+        avatarUrl: updatedUser.avatarUrl,
+        profileComplete: updatedUser.profileComplete,
+        clinicId: updatedUser.clinicId,
+        clinicName: updatedUser.clinicName,
+      },
+    });
+  } catch (error) {
+    console.error("Clinic register error:", error);
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+});
+
+// GET /api/clinics/my — doctor fetches their own clinic
+router.get("/my", protectDoctor, async (req, res) => {
+  try {
+    if (!req.user.clinicId) {
+      return res.status(400).json({
+        success: false,
+        message: "No clinic linked to your account.",
+      });
+    }
+    const clinic = await Clinic.findById(req.user.clinicId);
+    if (!clinic) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Clinic not found." });
+    }
+    res.json({ success: true, clinic });
+  } catch (error) {
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+});
+
+// PATCH /api/clinics/my — doctor updates their own clinic
+router.patch("/my", protectDoctor, async (req, res) => {
+  try {
+    if (!req.user.clinicId) {
+      return res.status(400).json({
+        success: false,
+        message: "No clinic linked to your account.",
+      });
+    }
+
+    const { name, location, contactPhone, contactEmail, services, image, isOpen, openingHours } = req.body;
+
+    const updates = {};
+    if (name !== undefined) updates.name = name;
+    if (location !== undefined) updates.location = location;
+    if (contactPhone !== undefined) updates.contactPhone = contactPhone;
+    if (contactEmail !== undefined) updates.contactEmail = contactEmail;
+    if (services !== undefined) updates.services = services;
+    if (image !== undefined) updates.image = image;
+    if (isOpen !== undefined) updates.isOpen = isOpen;
+    if (openingHours !== undefined) updates.openingHours = openingHours;
+
+
+    const clinic = await Clinic.findByIdAndUpdate(req.user.clinicId, updates, {
+      new: true,
+      runValidators: true,
+    });
+
+    if (!clinic) {
       return res
         .status(404)
         .json({ success: false, message: "Clinic not found." });
     }
 
-    res.json({ success: true, data: clinic });
+    if (name && name !== req.user.clinicName) {
+      await User.findByIdAndUpdate(req.user._id, { clinicName: clinic.name });
+    }
+
+    res.json({
+      success: true,
+      message: "Clinic profile updated.",
+      clinic
+    });
   } catch (error) {
+    console.error("Clinic update error:", error);
     res.status(500).json({ success: false, message: "Server error." });
   }
 });
@@ -73,7 +198,6 @@ router.get("/:id", async (req, res) => {
 // ─────────────────────────────────────────────
 // POST /api/clinics/seed
 // Dev only — seed test clinic data
-// Remove or protect this before production!
 // ─────────────────────────────────────────────
 router.post("/seed", async (req, res) => {
   if (process.env.NODE_ENV === "production") {
@@ -165,46 +289,61 @@ router.post("/seed", async (req, res) => {
   }
 });
 
-module.exports = router;
+// ─────────────────────────────────────────────
+// GET /api/clinics/:id
+// Public — get a single clinic by ID
+// NOTE: Must come AFTER all named routes (/my, /register, /seed)
+// ─────────────────────────────────────────────
+router.get("/:id", async (req, res) => {
+  try {
+    const clinic = await Clinic.findById(req.params.id);
+
+    if (!clinic || !clinic.isActive) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Clinic not found." });
+    }
+
+    res.json({ success: true, data: clinic });
+  } catch (error) {
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+});
 
 // ─────────────────────────────────────────────
+// ADMIN ROUTES
+// ─────────────────────────────────────────────
 
-// ═══════════════════════════════════════════════════════════════
-// DOCTOR SELF-SERVICE ROUTES
-// Protected by authDoctor (role === "Doctors")
-// No admin needed — doctors manage their own clinic.
-// ═══════════════════════════════════════════════════════════════
-const { protectDoctor } = require("../middleware/authDoctor.js");
-const User = require("../models/User");
-
-// ─────────────────────────────────────────────────────────────
-// POST /api/clinics/register
-// Called from clinic-register.html after doctor signs up.
-// Creates the clinic document AND links it back to the doctor's
-// User record in one atomic sequence.
-// Body: { name, address, city, state?, phone, email?, services? }
-// ─────────────────────────────────────────────────────────────
-router.post("/register", protectDoctor, async (req, res) => {
+// POST /api/clinics — add new clinic + doctor account (admin)
+router.post("/", protectAdmin, async (req, res) => {
   try {
-    const { name, address, city, state, phone, email, services } = req.body;
+    const { 
+      name, location, phone, email, services,
+      doctorName, doctorEmail, doctorPassword 
+    } = req.body;
 
-    if (!name || !address || !city || !phone) {
+    const address = location?.address;
+    const city = location?.city;
+    const state = location?.state;
+
+    // 1. Basic validation
+    if (!name || !address || !city || !doctorName || !doctorEmail || !doctorPassword) {
       return res.status(400).json({
         success: false,
-        message: "Clinic name, address, city and phone are required.",
+        message: "Clinic name, address, city, and doctor account details are required.",
       });
     }
 
-    // Prevent creating a second clinic if one already exists
-    if (req.user.clinicId) {
+    // 2. Check if doctor email is already taken
+    const existingUser = await User.findOne({ email: doctorEmail.toLowerCase() });
+    if (existingUser) {
       return res.status(400).json({
         success: false,
-        message: "You already have a clinic registered.",
-        clinicId: req.user.clinicId,
+        message: "A user with this email already exists.",
       });
     }
 
-    // Create the clinic
+    // 3. Create the Clinic
     const clinic = await Clinic.create({
       name: name.trim(),
       location: {
@@ -212,167 +351,39 @@ router.post("/register", protectDoctor, async (req, res) => {
         city: city.trim(),
         state: state?.trim() || "",
       },
-      contactPhone: phone.trim(),
+      contactPhone: phone?.trim() || "",
       contactEmail: email?.trim() || "",
       services: Array.isArray(services) ? services : [],
       isOpen: true,
       isActive: true,
     });
 
-    // Link clinic back to the doctor's User document
-    const updatedUser = await User.findByIdAndUpdate(
-      req.user._id,
-      { clinicId: clinic._id, clinicName: clinic.name },
-      { new: true },
-    ).select("-password");
-
-    // Send welcome email to doctor (non-blocking)
-    const { sendDoctorWelcomeEmail } = require("../services/emailService");
-    sendDoctorWelcomeEmail({
-      to: req.user.email,
-      doctorName: req.user.fullName,
+    // 4. Create the Doctor User
+    const doctor = await User.create({
+      fullName: doctorName.trim(),
+      email: doctorEmail.toLowerCase(),
+      password: doctorPassword,
+      role: "Doctors",
+      clinicId: clinic._id,
       clinicName: clinic.name,
-    }).catch((err) =>
-      console.error("Doctor welcome email failed:", err.message),
-    );
+      profileComplete: true
+    });
 
     res.status(201).json({
       success: true,
-      message: "Clinic registered successfully.",
-      clinic: { id: clinic._id, name: clinic.name },
-      // Return full user so frontend can update localStorage immediately
-      user: {
-        id: updatedUser._id,
-        fullName: updatedUser.fullName,
-        email: updatedUser.email,
-        role: updatedUser.role,
-        avatarUrl: updatedUser.avatarUrl,
-        profileComplete: updatedUser.profileComplete,
-        clinicId: updatedUser.clinicId,
-        clinicName: updatedUser.clinicName,
-      },
+      message: "Clinic and Doctor account created successfully.",
+      data: {
+        clinic: { id: clinic._id, name: clinic.name },
+        doctor: { id: doctor._id, fullName: doctor.fullName, email: doctor.email }
+      }
     });
   } catch (error) {
-    console.error("Clinic register error:", error);
+    console.error("Admin add clinic error:", error);
     res.status(500).json({ success: false, message: "Server error." });
   }
 });
 
-// ─────────────────────────────────────────────────────────────
-// GET /api/clinics/my
-// Doctor fetches their own clinic to pre-fill settings form.
-// ─────────────────────────────────────────────────────────────
-router.get("/my", protectDoctor, async (req, res) => {
-  try {
-    if (!req.user.clinicId) {
-      return res.status(400).json({
-        success: false,
-        message: "No clinic linked to your account.",
-      });
-    }
-    const clinic = await Clinic.findById(req.user.clinicId);
-    if (!clinic) {
-      return res
-        .status(404)
-        .json({ success: false, message: "Clinic not found." });
-    }
-    res.json({ success: true, clinic });
-  } catch (error) {
-    res.status(500).json({ success: false, message: "Server error." });
-  }
-});
-
-// ─────────────────────────────────────────────────────────────
-// PATCH /api/clinics/my
-// Doctor updates their own clinic profile from settings page.
-// Only updates fields that were sent — others untouched.
-// ─────────────────────────────────────────────────────────────
-router.patch("/my", protectDoctor, async (req, res) => {
-  try {
-    if (!req.user.clinicId) {
-      return res.status(400).json({
-        success: false,
-        message: "No clinic linked to your account.",
-      });
-    }
-
-    const {
-      name,
-      address,
-      city,
-      state,
-      phone,
-      email,
-      services,
-      image,
-      isOpen,
-    } = req.body;
-
-    const updates = {};
-    if (name !== undefined) updates.name = name;
-    if (address !== undefined) updates["location.address"] = address;
-    if (city !== undefined) updates["location.city"] = city;
-    if (state !== undefined) updates["location.state"] = state;
-    if (phone !== undefined) updates.contactPhone = phone;
-    if (email !== undefined) updates.contactEmail = email;
-    if (services !== undefined) updates.services = services;
-    if (image !== undefined) updates.image = image;
-    if (isOpen !== undefined) updates.isOpen = isOpen;
-
-    const clinic = await Clinic.findByIdAndUpdate(req.user.clinicId, updates, {
-      new: true,
-      runValidators: true,
-    });
-
-    if (!clinic) {
-      return res
-        .status(404)
-        .json({ success: false, message: "Clinic not found." });
-    }
-
-    // Keep clinicName in sync on User if name changed
-    if (name && name !== req.user.clinicName) {
-      await User.findByIdAndUpdate(req.user._id, { clinicName: clinic.name });
-    }
-
-    res.json({
-      success: true,
-      message: "Clinic profile updated.",
-      clinic: {
-        id: clinic._id,
-        name: clinic.name,
-        location: clinic.location,
-        contactPhone: clinic.contactPhone,
-        contactEmail: clinic.contactEmail,
-        services: clinic.services,
-        image: clinic.image,
-        isOpen: clinic.isOpen,
-      },
-    });
-  } catch (error) {
-    console.error("Clinic update error:", error);
-    res.status(500).json({ success: false, message: "Server error." });
-  }
-});
-
-// ADMIN ROUTES — require admin token
-// ─────────────────────────────────────────────
-const { protectAdmin } = require("../middleware/auth");
-
-// POST /api/clinics — add new clinic
-router.post("/", protectAdmin, async (req, res) => {
-  try {
-    const clinic = await Clinic.create(req.body);
-    res
-      .status(201)
-      .json({ success: true, message: "Clinic added.", data: clinic });
-  } catch (error) {
-    console.error("Add clinic error:", error);
-    res.status(500).json({ success: false, message: "Server error." });
-  }
-});
-
-// PUT /api/clinics/:id — edit clinic
+// PUT /api/clinics/:id — edit clinic (admin)
 router.put("/:id", protectAdmin, async (req, res) => {
   try {
     const clinic = await Clinic.findByIdAndUpdate(req.params.id, req.body, {
@@ -390,7 +401,7 @@ router.put("/:id", protectAdmin, async (req, res) => {
   }
 });
 
-// DELETE /api/clinics/:id — toggle active/inactive
+// DELETE /api/clinics/:id — toggle active/inactive (admin)
 router.delete("/:id", protectAdmin, async (req, res) => {
   try {
     const clinic = await Clinic.findById(req.params.id);
@@ -410,7 +421,7 @@ router.delete("/:id", protectAdmin, async (req, res) => {
   }
 });
 
-// PATCH /api/clinics/:id/toggle — toggle open/closed
+// PATCH /api/clinics/:id/toggle — toggle open/closed (admin)
 router.patch("/:id/toggle", protectAdmin, async (req, res) => {
   try {
     const { isOpen } = req.body;
@@ -432,3 +443,5 @@ router.patch("/:id/toggle", protectAdmin, async (req, res) => {
     res.status(500).json({ success: false, message: "Server error." });
   }
 });
+
+module.exports = router;

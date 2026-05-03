@@ -5,7 +5,13 @@ const notificationSchema = new mongoose.Schema(
     user: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
-      required: true,
+      required: false,
+      index: true,
+    },
+    clinic: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Clinic",
+      required: false,
       index: true,
     },
     type: {
@@ -15,6 +21,8 @@ const notificationSchema = new mongoose.Schema(
         "visit_confirmed",
         "visit_completed",
         "visit_cancelled",
+        "walk_in",
+        "critical_alert",
         "general",
       ],
       default: "general",

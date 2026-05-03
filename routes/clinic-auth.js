@@ -1,7 +1,9 @@
 const express     = require("express");
 const router      = express.Router();
 const jwt         = require("jsonwebtoken");
+const crypto      = require("crypto");
 const ClinicStaff = require("../models/ClinicStaff");
+const { sendPasswordResetEmail } = require("../services/emailService");
 const Clinic      = require("../models/Clinic");
 const { protectClinic }  = require("../middleware/authClinic");
 const { protectAdmin }   = require("../middleware/auth");
@@ -207,6 +209,100 @@ router.get("/staff", protectAdmin, async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ success: false, message: "Server error." });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// POST /api/clinic-auth/forgot-password
+// Public — staff request password reset
+// ─────────────────────────────────────────────────────────────
+router.post("/forgot-password", async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) {
+      return res.status(400).json({ success: false, message: "Email is required" });
+    }
+
+    const staff = await ClinicStaff.findOne({ email: email.toLowerCase() });
+
+    // For security, always return success message even if staff not found
+    if (!staff) {
+      return res.status(200).json({
+        success: true,
+        message: "If an account with that email exists, a reset link has been sent.",
+      });
+    }
+
+    // Generate token
+    const resetToken = crypto.randomBytes(32).toString("hex");
+    const hashedToken = crypto.createHash("sha256").update(resetToken).digest("hex");
+
+    staff.passwordResetToken = hashedToken;
+    staff.passwordResetExpires = Date.now() + 3600000; // 1 hour
+    await staff.save({ validateBeforeSave: false });
+
+    const resetUrl = `${process.env.FRONTEND_URL}/clinic-reset-password.html?token=${resetToken}`;
+    console.log("🔑 [DEV] Clinic Staff Password Reset URL:", resetUrl);
+
+    try {
+      await sendPasswordResetEmail({
+        to: staff.email,
+        name: staff.fullName,
+        resetUrl,
+      });
+
+      res.status(200).json({
+        success: true,
+        message: "If an account with that email exists, a reset link has been sent.",
+      });
+    } catch (err) {
+      staff.passwordResetToken = undefined;
+      staff.passwordResetExpires = undefined;
+      await staff.save({ validateBeforeSave: false });
+      return res.status(500).json({ success: false, message: "Email could not be sent" });
+    }
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// POST /api/clinic-auth/reset-password/:token
+// Public — staff set new password
+// ─────────────────────────────────────────────────────────────
+router.post("/reset-password/:token", async (req, res) => {
+  try {
+    const hashedToken = crypto.createHash("sha256").update(req.params.token).digest("hex");
+
+    console.log("🔍 [DEV] Clinic Reset Attempt - Token:", req.params.token);
+    console.log("🔍 [DEV] Clinic Reset Attempt - Hash:", hashedToken);
+
+    const staff = await ClinicStaff.findOne({
+      passwordResetToken: hashedToken,
+      passwordResetExpires: { $gt: Date.now() },
+    });
+
+    if (!staff) {
+      const expiredStaff = await ClinicStaff.findOne({ passwordResetToken: hashedToken });
+      if (expiredStaff) {
+        console.log("❌ [DEV] Clinic Token found but EXPIRED.");
+        return res.status(400).json({ success: false, message: "Reset link has expired" });
+      }
+      console.log("❌ [DEV] No staff found with that token.");
+      return res.status(400).json({ success: false, message: "Invalid or expired token" });
+    }
+
+    staff.password = req.body.password;
+    staff.passwordResetToken = undefined;
+    staff.passwordResetExpires = undefined;
+    await staff.save();
+
+    res.status(200).json({
+      success: true,
+      message: "Password reset successful",
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
   }
 });
 

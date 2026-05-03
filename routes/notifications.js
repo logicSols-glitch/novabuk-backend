@@ -13,12 +13,19 @@ router.use(protectUser);
 // ─────────────────────────────────────────────
 router.get("/", async (req, res) => {
   try {
-    const notifications = await Notification.find({ user: req.user._id })
+    const query = {
+      $or: [{ user: req.user._id }]
+    };
+    if (req.user.clinicId) {
+      query.$or.push({ clinic: req.user.clinicId });
+    }
+
+    const notifications = await Notification.find(query)
       .sort({ createdAt: -1 })
       .limit(20);
 
     const unreadCount = await Notification.countDocuments({
-      user: req.user._id,
+      ...query,
       read: false,
     });
 
@@ -39,8 +46,15 @@ router.get("/", async (req, res) => {
 // ─────────────────────────────────────────────
 router.get("/unread-count", async (req, res) => {
   try {
+    const query = {
+      $or: [{ user: req.user._id }]
+    };
+    if (req.user.clinicId) {
+      query.$or.push({ clinic: req.user.clinicId });
+    }
+
     const count = await Notification.countDocuments({
-      user: req.user._id,
+      ...query,
       read: false,
     });
     res.json({ success: true, count });
@@ -55,10 +69,14 @@ router.get("/unread-count", async (req, res) => {
 // ─────────────────────────────────────────────
 router.patch("/:id/read", async (req, res) => {
   try {
-    await Notification.findOneAndUpdate(
-      { _id: req.params.id, user: req.user._id },
-      { read: true }
-    );
+    const query = { _id: req.params.id };
+    if (req.user.clinicId) {
+      query.$or = [{ user: req.user._id }, { clinic: req.user.clinicId }];
+    } else {
+      query.user = req.user._id;
+    }
+
+    await Notification.findOneAndUpdate(query, { read: true });
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ success: false, message: "Server error." });
@@ -72,10 +90,14 @@ router.patch("/:id/read", async (req, res) => {
 // ─────────────────────────────────────────────
 router.patch("/mark-all-read", async (req, res) => {
   try {
-    await Notification.updateMany(
-      { user: req.user._id, read: false },
-      { read: true }
-    );
+    const query = { read: false };
+    if (req.user.clinicId) {
+      query.$or = [{ user: req.user._id }, { clinic: req.user.clinicId }];
+    } else {
+      query.user = req.user._id;
+    }
+
+    await Notification.updateMany(query, { read: true });
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ success: false, message: "Server error." });

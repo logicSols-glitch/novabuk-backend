@@ -4,7 +4,10 @@ const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
 const User = require("../models/User");
 const { protectUser } = require("../middleware/authUser");
-const { sendPasswordResetEmail, sendWelcomeEmail } = require("../services/emailService");
+const { sendPasswordResetEmail, sendWelcomeEmail, sendOTPEmail } = require("../services/emailService");
+const { OAuth2Client } = require("google-auth-library");
+
+const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 // Helper: generate JWT token
 const generateToken = (id) =>
@@ -40,35 +43,31 @@ router.post("/register", async (req, res) => {
       });
     }
 
-    const user = await User.create({ fullName, email, password, role: role || "Patient" });
+    const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
+    const otpExpires = Date.now() + 15 * 60 * 1000; // 15 minutes
 
-    // Send welcome email (non-blocking — don't fail registration if email fails)
-    sendWelcomeEmail({ to: email, name: fullName }).catch((err) =>
-      console.error("Welcome email failed:", err.message)
-    );
+    const user = await User.create({
+      fullName,
+      email,
+      password,
+      role: role || "Patient",
+      otpCode,
+      otpExpires,
+      isVerified: false,
+    });
 
-    const regToken = generateToken(user._id);
+    // Send OTP email - Await to ensure it's sent before responding
+    try {
+      await sendOTPEmail({ to: email, name: fullName, otpCode });
+    } catch (err) {
+      console.error("OTP email failed:", err.message);
+    }
 
     res.status(201).json({
       success: true,
-      message: "Account created successfully.",
-      token:   regToken,
-      // Doctor with no clinic → register their clinic first
-      // Doctor with clinic already → go to queue
-      // Patient → patient dashboard
-      redirectTo: user.role === "Doctors"
-        ? (user.clinicId ? "./clinic-queue.html" : "./clinic-register.html")
-        : "./app-home.html",
-      user: {
-        id:              user._id,
-        fullName:        user.fullName,
-        email:           user.email,
-        role:            user.role,
-        avatarUrl:       user.avatarUrl,
-        profileComplete: user.profileComplete,
-        clinicId:        user.clinicId   || null,
-        clinicName:      user.clinicName || "",
-      },
+      message: "Account created. Please verify with the 6-digit code sent to your email.",
+      email: user.email,
+      redirectTo: "./verify-otp.html",
     });
   } catch (error) {
     console.error("Register error:", error);
@@ -110,6 +109,30 @@ router.post("/login", async (req, res) => {
       });
     }
 
+    if (!user.isVerified) {
+      // Automatically generate and send a new OTP
+      const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
+      const otpExpires = Date.now() + 15 * 60 * 1000;
+      
+      user.otpCode = otpCode;
+      user.otpExpires = otpExpires;
+      await user.save();
+
+      try {
+        await sendOTPEmail({ to: user.email, name: user.fullName, otpCode });
+      } catch (err) {
+        console.error("Auto-resend OTP email failed:", err.message);
+      }
+
+      return res.status(401).json({
+        success: false,
+        message: "Please verify your email before logging in. A new code has been sent.",
+        email: user.email,
+        isVerified: false,
+        redirectTo: "./verify-otp.html"
+      });
+    }
+
     const loginToken = generateToken(user._id);
 
     res.json({
@@ -126,6 +149,7 @@ router.post("/login", async (req, res) => {
         role:            user.role,
         avatarUrl:       user.avatarUrl,
         profileComplete: user.profileComplete,
+        isVerified:      user.isVerified,
         clinicId:        user.clinicId   || null,
         clinicName:      user.clinicName || "",
       },
@@ -150,6 +174,7 @@ router.get("/me", protectUser, async (req, res) => {
         email: req.user.email,
         phone: req.user.phone,
         dateOfBirth: req.user.dateOfBirth,
+        age: req.user.age,
         address: req.user.address,
         city: req.user.city,
         state: req.user.state,
@@ -173,12 +198,14 @@ router.get("/me", protectUser, async (req, res) => {
 // ─────────────────────────────────────────────
 router.put("/health-profile", protectUser, async (req, res) => {
   try {
-    const { ageRange, gender, existingConditions, allergies } = req.body;
+    const { ageRange, gender, existingConditions, allergies, dateOfBirth, age } = req.body;
 
     const user = await User.findByIdAndUpdate(
       req.user._id,
       {
         healthProfile: { ageRange, gender, existingConditions, allergies },
+        dateOfBirth: dateOfBirth || req.user.dateOfBirth,
+        age: age || req.user.age,
         profileComplete: true, // mark onboarding done
       },
       { new: true, runValidators: true }
@@ -319,7 +346,8 @@ router.post("/forgot-password", async (req, res) => {
     await user.save({ validateBeforeSave: false });
 
     // Build reset URL — frontend will handle this page
-   const resetUrl = `${process.env.FRONTEND_URL}/reset-password.html?token=${resetToken}`;
+    const resetUrl = `${process.env.FRONTEND_URL}/reset-password.html?token=${resetToken}`;
+    console.log("🔑 [DEV] Password Reset URL:", resetUrl);
 
     try {
       await sendPasswordResetEmail({
@@ -400,6 +428,197 @@ router.post("/reset-password/:token", async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────
+// POST /api/users/verify-otp
+// Public — verify email with 6-digit code
+// ─────────────────────────────────────────────
+router.post("/verify-otp", async (req, res) => {
+  try {
+    const { email, otpCode } = req.body;
+
+    if (!email || !otpCode) {
+      return res.status(400).json({ success: false, message: "Email and code are required." });
+    }
+
+    const user = await User.findOne({ email: email.toLowerCase() });
+
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User not found." });
+    }
+
+    // Safety net: If already verified (e.g. from a different tab), just log them in
+    if (user.isVerified) {
+      const token = generateToken(user._id);
+      return res.json({
+        success: true,
+        message: "Account already verified. Logging you in...",
+        token,
+        redirectTo: user.role === "Doctors"
+          ? (user.clinicId ? "./clinic-queue.html" : "./clinic-register.html")
+          : "./app-home.html",
+        user: {
+          id:              user._id,
+          fullName:        user.fullName,
+          email:           user.email,
+          role:            user.role,
+          avatarUrl:       user.avatarUrl,
+          profileComplete: user.profileComplete,
+          isVerified:      true,
+          clinicId:        user.clinicId   || null,
+          clinicName:      user.clinicName || "",
+        },
+      });
+    }
+
+    // Check if code matches and hasn't expired
+    if (user.otpCode !== otpCode || user.otpExpires < Date.now()) {
+      return res.status(400).json({ success: false, message: "Invalid or expired verification code." });
+    }
+
+    user.isVerified = true;
+    user.otpCode = null;
+    user.otpExpires = null;
+    await user.save();
+
+    // Now send the welcome email
+    sendWelcomeEmail({ to: user.email, name: user.fullName }).catch(() => {});
+
+    const token = generateToken(user._id);
+
+    res.json({
+      success: true,
+      message: "Email verified successfully!",
+      token,
+      redirectTo: user.role === "Doctors"
+        ? (user.clinicId ? "./clinic-queue.html" : "./clinic-register.html")
+        : "./app-home.html",
+      user: {
+        id:              user._id,
+        fullName:        user.fullName,
+        email:           user.email,
+        role:            user.role,
+        avatarUrl:       user.avatarUrl,
+        profileComplete: user.profileComplete,
+        isVerified:      user.isVerified,
+        clinicId:        user.clinicId   || null,
+        clinicName:      user.clinicName || "",
+      },
+    });
+  } catch (error) {
+    console.error("OTP verification error:", error);
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+});
+
+// ─────────────────────────────────────────────
+// POST /api/users/google-login
+// Public — Social Login Fast-track (Verified)
+// ─────────────────────────────────────────────
+router.post("/google-login", async (req, res) => {
+  try {
+    const { idToken } = req.body;
+
+    if (!idToken) {
+      return res.status(400).json({ success: false, message: "Google token is required." });
+    }
+
+    // Verify the Google ID Token
+    const ticket = await client.verifyIdToken({
+      idToken,
+      audience: process.env.GOOGLE_CLIENT_ID,
+    });
+    
+    const payload = ticket.getPayload();
+    const { sub: googleId, email, name: fullName, picture: avatarUrl } = payload;
+
+    if (!email) {
+      return res.status(400).json({ success: false, message: "Email not provided by Google." });
+    }
+
+    let user = await User.findOne({ $or: [{ googleId }, { email: email.toLowerCase() }] });
+
+    if (!user) {
+      // Create new verified user (Social login is pre-verified)
+      user = await User.create({
+        googleId,
+        email: email.toLowerCase(),
+        fullName,
+        avatarUrl,
+        isVerified: true,
+        profileComplete: false,
+      });
+      sendWelcomeEmail({ to: user.email, name: user.fullName }).catch(() => {});
+    } else {
+      // User exists — ensure they are verified and linked to Google
+      let updated = false;
+      if (!user.googleId) { user.googleId = googleId; updated = true; }
+      if (!user.isVerified) { user.isVerified = true; updated = true; }
+      if (!user.avatarUrl && avatarUrl) { user.avatarUrl = avatarUrl; updated = true; }
+      
+      if (updated) await user.save();
+    }
+
+    const token = generateToken(user._id);
+
+    res.json({
+      success: true,
+      token,
+      redirectTo: user.role === "Doctors"
+        ? (user.clinicId ? "./clinic-queue.html" : "./clinic-register.html")
+        : "./app-home.html",
+      user: {
+        id:              user._id,
+        fullName:        user.fullName,
+        email:           user.email,
+        role:            user.role,
+        avatarUrl:       user.avatarUrl,
+        profileComplete: user.profileComplete,
+        isVerified:      user.isVerified,
+        clinicId:        user.clinicId   || null,
+        clinicName:      user.clinicName || "",
+      },
+    });
+  } catch (error) {
+    console.error("Google login error:", error);
+    res.status(401).json({ success: false, message: "Invalid Google token." });
+  }
+});
+
+// ─────────────────────────────────────────────
+// POST /api/users/resend-otp
+// Public — resend verification code
+// ─────────────────────────────────────────────
+router.post("/resend-otp", async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ success: false, message: "Email is required." });
+
+    const user = await User.findOne({ email: email.toLowerCase() });
+    if (!user) {
+      // Don't reveal if user exists for security, but we know they exist if they are on the OTP page
+      return res.json({ success: true, message: "If an account exists, a new code has been sent." });
+    }
+
+    if (user.isVerified) {
+      return res.status(400).json({ success: false, message: "Account already verified. Please log in." });
+    }
+
+    const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
+    const otpExpires = Date.now() + 15 * 60 * 1000;
+
+    user.otpCode = otpCode;
+    user.otpExpires = otpExpires;
+    await user.save();
+
+    await sendOTPEmail({ to: user.email, name: user.fullName, otpCode });
+
+    res.json({ success: true, message: "New verification code sent!" });
+  } catch (error) {
+    console.error("Resend OTP error:", error);
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+});
+
 
 // ─────────────────────────────────────────────
 // GET /api/users/settings
@@ -416,6 +635,7 @@ router.get("/settings", protectUser, async (req, res) => {
           email: req.user.email,
           phone: req.user.phone,
           dateOfBirth: req.user.dateOfBirth,
+          age: req.user.age,
           address: req.user.address,
           city: req.user.city,
           state: req.user.state,
@@ -442,7 +662,7 @@ router.get("/settings", protectUser, async (req, res) => {
 router.put("/profile", protectUser, async (req, res) => {
   try {
     const {
-      fullName, email, phone, dateOfBirth, address, city, state,
+      fullName, email, phone, dateOfBirth, age, address, city, state,
       avatarUrl, emergencyContact,
       // health profile fields
       ageRange, gender, existingConditions, allergies,
@@ -454,6 +674,7 @@ router.put("/profile", protectUser, async (req, res) => {
     if (email)               updates.email       = email.toLowerCase();
     if (phone      !== undefined) updates.phone      = phone;
     if (dateOfBirth!== undefined) updates.dateOfBirth = dateOfBirth;
+    if (age        !== undefined) updates.age         = age;
     if (address    !== undefined) updates.address    = address;
     if (city       !== undefined) updates.city       = city;
     if (state      !== undefined) updates.state      = state;

@@ -39,6 +39,7 @@ const userSchema = new mongoose.Schema(
     // ── EXTENDED PROFILE (Profile Settings screen) ────────
     phone:       { type: String, default: "" },
     dateOfBirth: { type: String, default: "" },
+    age:         { type: Number, default: null },
     address:     { type: String, default: "" },
     city:        { type: String, default: "" },
     state:       { type: String, default: "" },
@@ -78,9 +79,14 @@ const userSchema = new mongoose.Schema(
       default: "Patient",
     },
 
-    // ── ONBOARDING ────────────────────────────────────────
+    // ── ONBOARDING & VERIFICATION ─────────────────────────
     profileComplete: { type: Boolean, default: false },
     isActive:        { type: Boolean, default: true  },
+    isVerified:      { type: Boolean, default: false },
+    otpCode:         { type: String,  default: null },
+    otpExpires:      { type: Date,    default: null },
+    googleId:        { type: String,  unique: true, sparse: true },
+    clinicId:        { type: mongoose.Schema.Types.ObjectId, ref: "Clinic", default: null },
 
     // ── PASSWORD RESET ────────────────────────────────────
     passwordResetToken:   { type: String, default: null },

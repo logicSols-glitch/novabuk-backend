@@ -52,6 +52,14 @@ const protectUser = async (req, res, next) => {
       });
     }
 
+    if (!user.isVerified) {
+      return res.status(401).json({
+        success: false,
+        message: "Email not verified.",
+        isVerified: false
+      });
+    }
+
     req.user = user;
     next();
   } catch (error) {

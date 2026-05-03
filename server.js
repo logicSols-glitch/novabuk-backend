@@ -71,6 +71,7 @@ app.use("/api/contact",   require("./routes/contact"));   // contact form
 // /api/clinics/register, /api/clinics/my are in routes/clinics.js
 // /api/clinic/queue, /api/clinic/visits/* are in routes/clinic-visits.js
 app.use("/api/clinic", require("./routes/clinic-visits"));
+app.use("/api/clinic-auth", require("./routes/clinic-auth"));
 
 // ── HEALTH CHECK ──────────────────────────────────────────
 app.get("/api/health", (req, res) => {
