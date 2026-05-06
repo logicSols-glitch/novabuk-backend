@@ -833,6 +833,42 @@ router.delete("/account", protectUser, async (req, res) => {
   }
 });
 
+// Admin: Get total count (patient count)
+const { protectAdmin } = require("../middleware/auth");
+router.get("/admin/count", protectAdmin, async (req, res) => {
+  try {
+    const count = await User.countDocuments({ role: "Patient" });
+    res.json({ success: true, count });
+  } catch (error) {
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
+// Admin: Get all users (patient list)
+router.get("/admin/all", protectAdmin, async (req, res) => {
+  try {
+    const users = await User.find({ role: "Patient" }).sort({ createdAt: -1 });
+    res.json({ success: true, data: users });
+  } catch (error) {
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
+// Admin: Toggle user status
+router.patch("/admin/:id/toggle", protectAdmin, async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id);
+    if (!user) return res.status(404).json({ success: false, message: "User not found" });
+    
+    user.isActive = !user.isActive;
+    await user.save();
+    
+    res.json({ success: true, message: `User ${user.isActive ? 'activated' : 'deactivated'}` });
+  } catch (error) {
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
 
 module.exports = router;
 

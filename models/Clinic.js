@@ -46,9 +46,18 @@ const clinicSchema = new mongoose.Schema(
       type: String,
       default: "",
     },
-    // Auto-calculated from reviews
-    averageRating: { type: Number, default: 0, min: 0, max: 5 },
-    numReviews:    { type: Number, default: 0 },
+    // Subscription & Plans
+    subscriptionPlan: {
+      type: String,
+      enum: ["Free", "Pro", "Enterprise"],
+      default: "Free",
+    },
+    subscriptionStatus: {
+      type: String,
+      enum: ["Active", "Expired", "Past Due"],
+      default: "Active",
+    },
+    subscriptionExpiry: { type: Date, default: null },
   },
   { timestamps: true }
 );

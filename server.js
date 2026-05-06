@@ -51,6 +51,7 @@ connectDB();
 
 // ── ROUTES — existing ────────────────────────────────────
 app.use("/api/blogs",   require("./routes/blogs"));
+app.use("/api/tips",    require("./routes/tips"));
 app.use("/api/admin",   require("./routes/admin"));
 app.use("/api/uploads", require("./routes/uploads"));
 
