@@ -218,7 +218,9 @@ router.patch("/visits/:id/confirm", async (req, res) => {
     // Send confirmation email to the patient
     if (visit.user && visit.user.email) {
       const emailEnabled = visit.user.notificationSettings?.emailNotifications !== false;
-      if (emailEnabled) {
+      const remindersEnabled = visit.user.notificationSettings?.appointmentReminders !== false;
+      
+      if (emailEnabled && remindersEnabled) {
         sendVisitConfirmationEmail({
           to:            visit.user.email,
           name:          visit.user.fullName,
@@ -417,6 +419,8 @@ router.get("/patients/search", async (req, res) => {
     // Search ALL patients across NovaBuk (Global Search)
     const users = await User.find({
       role: "Patient",
+      // Only show patients who allow healthcare providers or anyone to see them
+      "privacySettings.profileVisibility": { $ne: "Private - Only me" },
       $or: [
         { fullName: { $regex: q, $options: "i" } },
         { email: { $regex: q, $options: "i" } },
@@ -424,7 +428,7 @@ router.get("/patients/search", async (req, res) => {
         { novaBukId: { $regex: q, $options: "i" } },
       ],
     })
-      .select("fullName email phone avatarUrl healthProfile novaBukId")
+      .select("fullName email phone avatarUrl healthProfile novaBukId privacySettings")
       .limit(15);
 
     const results = await Promise.all(
@@ -550,12 +554,28 @@ router.post("/walk-in", async (req, res) => {
 router.get("/patients/:id", async (req, res) => {
   try {
     const user = await User.findById(req.params.id).select(
-      "fullName email phone dateOfBirth healthProfile avatarUrl emergencyContact address city state"
+      "fullName email phone dateOfBirth healthProfile avatarUrl emergencyContact address city state privacySettings"
     );
     if (!user) {
       return res.status(404).json({ success: false, message: "Patient not found." });
     }
-    res.json({ success: true, patient: user });
+
+    // ── Enforce Privacy Settings ───────────────────────
+    const canShare = user.privacySettings?.shareDataWithProviders !== false;
+    
+    if (!canShare) {
+      // Redact sensitive clinical data if sharing is disabled
+      user.healthProfile = {
+        ageRange: user.healthProfile?.ageRange || null,
+        gender: user.healthProfile?.gender || null,
+        existingConditions: ["Restricted"],
+        allergies: ["Restricted"]
+      };
+      user.emergencyContact = { name: "Restricted", phone: "Restricted" };
+      user.address = "Restricted";
+    }
+
+    res.json({ success: true, patient: user, privacyRestricted: !canShare });
   } catch (error) {
     console.error("Get patient error:", error);
     res.status(500).json({ success: false, message: "Server error." });
