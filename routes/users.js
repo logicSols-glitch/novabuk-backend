@@ -135,6 +135,13 @@ router.post("/login", async (req, res) => {
 
     const loginToken = generateToken(user._id);
 
+    // Auto-repair missing NovaBuk ID
+    if (user.role === "Patient" && !user.novaBukId) {
+      const random = Math.floor(1000 + Math.random() * 9000);
+      user.novaBukId = `NB-${random}`;
+      await user.save();
+    }
+
     res.json({
       success: true,
       message: "Login successful.",
@@ -152,6 +159,7 @@ router.post("/login", async (req, res) => {
         isVerified:      user.isVerified,
         clinicId:        user.clinicId   || null,
         clinicName:      user.clinicName || "",
+        novaBukId:       user.novaBukId,
       },
     });
   } catch (error) {
@@ -160,12 +168,15 @@ router.post("/login", async (req, res) => {
   }
 });
 
-// ─────────────────────────────────────────────
-// GET /api/users/me
-// Protected — get current user's full profile
-// ─────────────────────────────────────────────
 router.get("/me", protectUser, async (req, res) => {
   try {
+    // Auto-repair missing NovaBuk ID if needed
+    if (req.user.role === "Patient" && !req.user.novaBukId) {
+      const random = Math.floor(1000 + Math.random() * 9000);
+      req.user.novaBukId = `NB-${random}`;
+      await req.user.save();
+    }
+
     res.json({
       success: true,
       user: {
@@ -185,6 +196,7 @@ router.get("/me", protectUser, async (req, res) => {
         notificationSettings: req.user.notificationSettings,
         profileComplete: req.user.profileComplete,
         createdAt: req.user.createdAt,
+        novaBukId: req.user.novaBukId,
       },
     });
   } catch (error) {
@@ -481,7 +493,7 @@ router.post("/verify-otp", async (req, res) => {
     await user.save();
 
     // Now send the welcome email
-    sendWelcomeEmail({ to: user.email, name: user.fullName }).catch(() => {});
+    sendWelcomeEmail({ to: user.email, name: user.fullName, novaBukId: user.novaBukId }).catch(() => {});
 
     const token = generateToken(user._id);
 
@@ -547,7 +559,7 @@ router.post("/google-login", async (req, res) => {
         isVerified: true,
         profileComplete: false,
       });
-      sendWelcomeEmail({ to: user.email, name: user.fullName }).catch(() => {});
+      sendWelcomeEmail({ to: user.email, name: user.fullName, novaBukId: user.novaBukId }).catch(() => {});
     } else {
       // User exists — ensure they are verified and linked to Google
       let updated = false;
@@ -576,6 +588,7 @@ router.post("/google-login", async (req, res) => {
         isVerified:      user.isVerified,
         clinicId:        user.clinicId   || null,
         clinicName:      user.clinicName || "",
+        novaBukId:       user.novaBukId,
       },
     });
   } catch (error) {
@@ -643,6 +656,7 @@ router.get("/settings", protectUser, async (req, res) => {
           emergencyContact: req.user.emergencyContact,
           healthProfile: req.user.healthProfile,
           profileComplete: req.user.profileComplete,
+          novaBukId: req.user.novaBukId,
         },
         privacySettings: req.user.privacySettings,
         notificationSettings: req.user.notificationSettings,

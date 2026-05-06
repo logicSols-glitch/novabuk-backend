@@ -5,7 +5,7 @@ const User = require("../models/User");
 const Clinic = require("../models/Clinic");
 const Notification = require("../models/notification");
 const { protectDoctor } = require("../middleware/authDoctor.js");
-const { sendVisitConfirmationEmail } = require("../services/emailService");
+const { sendVisitConfirmationEmail, sendWalkInWelcomeEmail } = require("../services/emailService");
 
 // All clinic routes require a logged-in Doctor
 router.use(protectDoctor);
@@ -73,7 +73,7 @@ router.get("/queue", async (req, res) => {
 
     const visits = await Visit.find(queryFilter)
       .sort({ preferredDate: 1, createdAt: 1 })
-      .populate("user", "fullName phone email healthProfile avatarUrl")
+      .populate("user", "fullName phone email healthProfile avatarUrl novaBukId")
       .populate("symptomLog", "tags description severity");
 
     // Status counts for tab badges
@@ -114,11 +114,21 @@ router.get("/queue", async (req, res) => {
             });
 
             if (!existing) {
+              const formatWaitTime = (m) => {
+                if (m < 60) return `${m} mins`;
+                const hours = Math.floor(m / 60);
+                const remainingMins = m % 60;
+                if (hours < 24) return remainingMins > 0 ? `${hours}h ${remainingMins}m` : `${hours}h`;
+                const days = Math.floor(hours / 24);
+                return `${days} day${days > 1 ? 's' : ''}+`;
+              };
+              const waitStr = formatWaitTime(waitTimeMins);
+
               await Notification.create({
                 clinic: clinicObjectId,
                 type: "critical_alert",
-                title: `Patient waiting — ${waitTimeMins} mins`,
-                message: `${v.user?.fullName || "A patient"} has been waiting since ${new Date(v.preferredDate).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}. Now ${waitTimeMins} minutes overdue.`,
+                title: `Patient waiting — ${waitStr}`,
+                message: `${v.user?.fullName || "A patient"} has been waiting since ${new Date(v.preferredDate).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}. Now ${waitStr} overdue.`,
                 link: "./clinic-queue.html"
               });
             }
@@ -143,7 +153,7 @@ router.get("/visits/:id", async (req, res) => {
     const visit = await Visit.findById(req.params.id)
       .populate(
         "user",
-        "fullName phone email dateOfBirth healthProfile avatarUrl emergencyContact",
+        "fullName phone email dateOfBirth healthProfile avatarUrl emergencyContact novaBukId",
       )
       .populate("symptomLog", "tags description severity createdAt")
       .populate("clinic", "name");
@@ -320,7 +330,7 @@ router.patch("/visits/:id/complete", async (req, res) => {
       req.body;
 
     const visit = await Visit.findById(req.params.id)
-      .populate("user", "fullName email notificationSettings")
+      .populate("user", "fullName email notificationSettings novaBukId")
       .populate("clinic", "name");
 
     if (!visit) {
@@ -404,39 +414,44 @@ router.get("/patients/search", async (req, res) => {
       return res.json({ success: true, data: [] });
     }
 
-    const filter = {};
-    if (clinicId) filter.clinic = clinicId;
-
-    const patientIds = await Visit.distinct("user", filter);
-
-    if (!patientIds.length) {
-      return res.json({ success: true, data: [] });
-    }
-
+    // Search ALL patients across NovaBuk (Global Search)
     const users = await User.find({
-      _id: { $in: patientIds },
+      role: "Patient",
       $or: [
         { fullName: { $regex: q, $options: "i" } },
         { email: { $regex: q, $options: "i" } },
         { phone: { $regex: q, $options: "i" } },
+        { novaBukId: { $regex: q, $options: "i" } },
       ],
     })
-      .select("fullName email phone avatarUrl healthProfile")
-      .limit(10);
+      .select("fullName email phone avatarUrl healthProfile novaBukId")
+      .limit(15);
 
     const results = await Promise.all(
       users.map(async (user) => {
-        const last = await Visit.findOne({
-          user: user._id,
-          ...(clinicId ? { clinic: clinicId } : {}),
-          status: "Completed",
-        })
-          .sort({ completedAt: -1 })
-          .select("completedAt preferredDate");
+        // Auto-repair missing NovaBuk ID if found in search
+        if (!user.novaBukId) {
+          const random = Math.floor(1000 + Math.random() * 9000);
+          user.novaBukId = `NB-${random}`;
+          await user.save();
+        }
+
+        // Still check for last visit at THIS clinic to provide context to the staff
+        let lastVisit = null;
+        if (clinicId) {
+          const last = await Visit.findOne({
+            user: user._id,
+            clinic: clinicId,
+            status: "Completed",
+          })
+            .sort({ completedAt: -1 })
+            .select("completedAt preferredDate");
+          lastVisit = last?.completedAt || last?.preferredDate || null;
+        }
 
         return {
           ...user.toObject(),
-          lastVisit: last?.completedAt || last?.preferredDate || null,
+          lastVisit,
         };
       }),
     );
@@ -565,6 +580,115 @@ router.get("/patients/:id/history", async (req, res) => {
     res.json({ success: true, visits });
   } catch (error) {
     console.error("Get patient history error:", error);
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// POST /api/clinic/walk-in-new
+// Register a NEW patient AND add them to today's queue.
+// Body: { fullName, email, phone, gender, age, clinicId, notes? }
+// ─────────────────────────────────────────────────────────────
+router.post("/walk-in-new", async (req, res) => {
+  try {
+    const { fullName, email, phone, gender, age, clinicId, notes } = req.body;
+
+    if (!fullName || !clinicId) {
+      return res.status(400).json({
+        success: false,
+        message: "fullName and clinicId are required.",
+      });
+    }
+
+    // 1. Check if user already exists by email or phone
+    let existingUser = null;
+    if (email) {
+      existingUser = await User.findOne({ email: email.toLowerCase() });
+    }
+    if (!existingUser && phone) {
+      existingUser = await User.findOne({ phone });
+    }
+
+    if (existingUser) {
+      return res.status(400).json({
+        success: false,
+        message: "A patient with this email or phone already exists. Please search and add them as a regular walk-in.",
+      });
+    }
+
+    // 2. Create new Patient user
+    // Generate a temporary random password (they can reset later)
+    const crypto = require("crypto");
+    const tempPassword = crypto.randomBytes(8).toString("hex");
+
+    const newUser = await User.create({
+      fullName: fullName.trim(),
+      email: email ? email.toLowerCase() : undefined,
+      phone: phone || undefined,
+      password: tempPassword,
+      role: "Patient",
+      profileComplete: true,
+      healthProfile: {
+        gender: gender || "Other",
+        ageRange: age ? `${age}` : "Not specified"
+      }
+    });
+
+    // 3. Create the Visit
+    const visit = await Visit.create({
+      user: newUser._id,
+      clinic: clinicId,
+      status: "Confirmed",
+      notes: notes || "First-time Walk-in",
+      preferredDate: new Date(),
+    });
+
+    await visit.populate("user", "fullName phone email healthProfile notificationSettings");
+    await visit.populate("clinic", "name");
+
+    // 4. Notify Clinic Portal
+    Notification.create({
+      clinic: clinicId,
+      type: "walk_in",
+      title: "New patient registered",
+      message: `${newUser.fullName} has been registered and added to the queue.`,
+      link: "./clinic-queue.html",
+    }).catch(() => {});
+
+    // 5. Send welcome & activation email
+    if (newUser.email) {
+      try {
+        const crypto = require("crypto");
+        const resetToken = crypto.randomBytes(32).toString("hex");
+        
+        newUser.passwordResetToken = crypto
+          .createHash("sha256")
+          .update(resetToken)
+          .digest("hex");
+        newUser.passwordResetExpires = Date.now() + 48 * 60 * 60 * 1000; // 48 hours
+        await newUser.save();
+
+        const activationUrl = `${process.env.FRONTEND_URL || "https://novabuk.vercel.app"}/app-reset-password.html?token=${resetToken}`;
+
+        await sendWalkInWelcomeEmail({
+          to: newUser.email,
+          name: newUser.fullName,
+          clinicName: visit.clinic?.name || "the clinic",
+          activationUrl,
+          novaBukId: newUser.novaBukId
+        });
+      } catch (err) {
+        console.error("Walk-in activation email failed:", err.message);
+      }
+    }
+
+    res.status(201).json({
+      success: true,
+      message: "New patient registered and added to queue.",
+      data: visit,
+    });
+  } catch (error) {
+    console.error("Walk-in-new error:", error);
     res.status(500).json({ success: false, message: "Server error." });
   }
 });

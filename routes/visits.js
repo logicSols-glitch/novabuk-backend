@@ -331,7 +331,7 @@ router.patch("/:id/status", protect, async (req, res) => {
     }
 
     const visit = await Visit.findById(req.params.id)
-      .populate("user", "fullName email notificationSettings")
+      .populate("user", "fullName email notificationSettings novaBukId")
       .populate("clinic", "name");
 
     if (!visit) {

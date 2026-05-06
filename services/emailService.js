@@ -60,10 +60,15 @@ const sendOTPEmail = async ({ to, name, otpCode }) => {
   return sendEmail({ to, subject: `${otpCode} is your ${APP_NAME} verification code`, html });
 };
 
-const sendWelcomeEmail = async ({ to, name }) => {
+const sendWelcomeEmail = async ({ to, name, novaBukId }) => {
   const html = wrap(`
     <h2 style="margin:0 0 8px;color:#1a1a1a;font-size:20px;">Welcome to ${APP_NAME}, ${name}! 👋</h2>
     <p style="color:#555;line-height:1.7;margin:0 0 20px;">Your account is ready. Log symptoms, find clinics, and manage your health records — all in one place.</p>
+    <div style="background:#f0f9fa;border-radius:12px;padding:18px 20px;margin-bottom:20px;border:1px solid #35bac9;">
+      <p style="margin:0;font-size:11px;color:#35bac9;text-transform:uppercase;letter-spacing:1px;font-weight:700;">Your Unique NovaBuk ID</p>
+      <p style="margin:5px 0 0;font-size:24px;font-weight:700;color:#0f2027;">${novaBukId || "Pending"}</p>
+      <p style="margin:8px 0 0;font-size:12px;color:#718096;line-height:1.4;">Show this ID at any NovaBuk clinic for instant check-in.</p>
+    </div>
     <div style="background:#e8f8fb;border-radius:10px;padding:18px 20px;margin-bottom:20px;">
       <p style="margin:0 0 10px;font-weight:600;color:#0f2027;font-size:14px;">Get started:</p>
       <p style="margin:4px 0;color:#4a5568;font-size:13px;">✅ Complete your health profile</p>
@@ -163,11 +168,35 @@ const sendDoctorCancellationEmail = async ({ to, doctorName, patientName, clinic
   return sendEmail({ to, subject: `Cancellation: ${patientName}'s visit — ${clinicName}`, html });
 };
 
+const sendWalkInWelcomeEmail = async ({ to, name, clinicName, activationUrl, novaBukId }) => {
+  const html = wrap(`
+    <h2 style="margin:0 0 8px;color:#1a1a1a;font-size:20px;">Welcome to ${APP_NAME}, ${name}! 👋</h2>
+    <p style="color:#555;line-height:1.7;margin:0 0 20px;">Your digital health record has been created at <strong>${clinicName}</strong>. You can now access your consultation notes and prescriptions online at any time.</p>
+    
+    <div style="background:#f0f9fa;border-radius:12px;padding:18px 20px;margin-bottom:24px;border:1px solid #35bac9;">
+      <p style="margin:0;font-size:11px;color:#35bac9;text-transform:uppercase;letter-spacing:1px;font-weight:700;">Your Unique NovaBuk ID</p>
+      <p style="margin:5px 0 0;font-size:24px;font-weight:700;color:#0f2027;">${novaBukId || "Pending"}</p>
+      <p style="margin:8px 0 0;font-size:12px;color:#718096;line-height:1.4;">Give this ID to any NovaBuk provider to instantly pull up your history.</p>
+    </div>
+
+    <div style="background:#e8f8fb;border-radius:10px;padding:18px 20px;margin-bottom:24px;">
+      <p style="margin:0 0 10px;font-weight:600;color:#0f2027;font-size:14px;">Next steps:</p>
+      <p style="margin:4px 0;color:#4a5568;font-size:13px;">🔑 Set your password to activate your account</p>
+      <p style="margin:4px 0;color:#4a5568;font-size:13px;">📋 View your diagnosis and prescriptions</p>
+      <p style="margin:4px 0;color:#4a5568;font-size:13px;">🔔 Get notified for follow-up visits</p>
+    </div>
+    ${ctaBtn("Set Password & View Records", activationUrl)}
+    <p style="color:#aaa;font-size:12px;margin-top:24px;">If you didn't visit ${clinicName} recently, please ignore this email.</p>
+  `);
+  return sendEmail({ to, subject: `Your health records at ${clinicName} are ready on ${APP_NAME}`, html });
+};
+
 module.exports = {
   sendEmail,
   sendPasswordResetEmail,
   sendWelcomeEmail,
   sendVisitConfirmationEmail,
+  sendWalkInWelcomeEmail,
   sendDoctorWelcomeEmail,
   sendDoctorNewBookingEmail,
   sendDoctorCancellationEmail,

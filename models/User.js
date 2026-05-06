@@ -91,9 +91,25 @@ const userSchema = new mongoose.Schema(
     // ── PASSWORD RESET ────────────────────────────────────
     passwordResetToken:   { type: String, default: null },
     passwordResetExpires: { type: Date,   default: null },
+
+    // ── GLOBAL IDENTIFIER ─────────────────────────────────
+    novaBukId: {
+      type: String,
+      unique: true,
+      sparse: true,
+    },
   },
   { timestamps: true }
 );
+
+// Generate NovaBuk ID before saving
+userSchema.pre("save", async function (next) {
+  if (this.role === "Patient" && !this.novaBukId) {
+    const random = Math.floor(1000 + Math.random() * 9000);
+    this.novaBukId = `NB-${random}`;
+  }
+  next();
+});
 
 // Hash password before saving
 userSchema.pre("save", async function (next) {
