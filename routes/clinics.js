@@ -5,6 +5,7 @@ const { protectUser } = require("../middleware/authUser");
 const { protectDoctor } = require("../middleware/authDoctor.js");
 const { protectAdmin } = require("../middleware/auth");
 const User = require("../models/User");
+const Visit = require("../models/Visit");
 
 // ─────────────────────────────────────────────
 // GET /api/clinics
@@ -440,6 +441,38 @@ router.patch("/:id/toggle", protectAdmin, async (req, res) => {
       data: clinic,
     });
   } catch (error) {
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+});
+
+// GET /api/clinics/admin/:id/stats — get clinic activity stats (admin)
+router.get("/admin/:id/stats", protectAdmin, async (req, res) => {
+  try {
+    const clinicId = req.params.id;
+    
+    // Count all visits for this clinic
+    const totalVisits = await Visit.countDocuments({ clinic: clinicId });
+    
+    // Count completed vs pending
+    const completedVisits = await Visit.countDocuments({ clinic: clinicId, status: "Completed" });
+    const pendingVisits = await Visit.countDocuments({ clinic: clinicId, status: "Pending" });
+    const inProgressVisits = await Visit.countDocuments({ clinic: clinicId, status: "InProgress" });
+    
+    // Count unique patients
+    const uniquePatients = await Visit.distinct("user", { clinic: clinicId });
+
+    res.json({
+      success: true,
+      data: {
+        totalVisits,
+        completedVisits,
+        pendingVisits,
+        inProgressVisits,
+        totalUniquePatients: uniquePatients.length
+      }
+    });
+  } catch (error) {
+    console.error("Clinic stats error:", error);
     res.status(500).json({ success: false, message: "Server error." });
   }
 });

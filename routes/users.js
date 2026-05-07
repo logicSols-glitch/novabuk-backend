@@ -869,6 +869,28 @@ router.patch("/admin/:id/toggle", protectAdmin, async (req, res) => {
   }
 });
 
+// Admin: Generate missing NovaBuk IDs
+router.post("/admin/generate-ids", protectAdmin, async (req, res) => {
+  try {
+    const users = await User.find({ role: "Patient", novaBukId: { $exists: false } });
+    let count = 0;
+    
+    for (const user of users) {
+      if (!user.novaBukId) {
+        const random = Math.floor(1000 + Math.random() * 9000);
+        user.novaBukId = `NB-${random}`;
+        await user.save();
+        count++;
+      }
+    }
+    
+    res.json({ success: true, message: `Successfully generated IDs for ${count} users.` });
+  } catch (error) {
+    console.error("ID Generation Error:", error);
+    res.status(500).json({ success: false, message: "Server error during ID generation." });
+  }
+});
+
 
 module.exports = router;
 
