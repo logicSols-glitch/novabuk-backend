@@ -86,7 +86,7 @@ const userSchema = new mongoose.Schema(
     otpCode:         { type: String,  default: null },
     otpExpires:      { type: Date,    default: null },
     googleId:        { type: String,  unique: true, sparse: true },
-    clinicId:        { type: mongoose.Schema.Types.ObjectId, ref: "Clinic", default: null },
+    clinicId:        { type: mongoose.Schema.Types.ObjectId, ref: "Clinic", default: null, index: true },
 
     // ── PASSWORD RESET ────────────────────────────────────
     passwordResetToken:   { type: String, default: null },

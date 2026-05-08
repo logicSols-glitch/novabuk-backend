@@ -9,7 +9,7 @@ const clinicSchema = new mongoose.Schema(
     },
     location: {
       address: { type: String, required: true },
-      city: { type: String, required: true },
+      city: { type: String, required: true, index: true },
       state: { type: String, default: "" },
       coordinates: {
         lat: { type: Number, default: null },
@@ -36,6 +36,7 @@ const clinicSchema = new mongoose.Schema(
     isActive: {
       type: Boolean,
       default: true,
+      index: true,
     },
     // Services offered
     services: {

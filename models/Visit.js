@@ -5,10 +5,12 @@ const visitSchema = new mongoose.Schema(
     user: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User", required: true,
+      index: true,
     },
     clinic: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Clinic", required: true,
+      index: true,
     },
     symptomLog: {
       type: mongoose.Schema.Types.ObjectId,
@@ -19,6 +21,7 @@ const visitSchema = new mongoose.Schema(
       type: String,
       enum: ["Pending", "Confirmed", "InProgress", "Completed", "Cancelled"],
       default: "Pending",
+      index: true,
     },
     preferredDate:  { type: Date,   default: null },
     notes:          { type: String, default: "" },
