@@ -419,8 +419,6 @@ router.get("/patients/search", async (req, res) => {
     // Search ALL patients across NovaBuk (Global Search)
     const users = await User.find({
       role: "Patient",
-      // Only show patients who allow healthcare providers or anyone to see them
-      "privacySettings.profileVisibility": { $ne: "Private - Only me" },
       $or: [
         { fullName: { $regex: q, $options: "i" } },
         { email: { $regex: q, $options: "i" } },
@@ -688,7 +686,7 @@ router.post("/walk-in-new", async (req, res) => {
         newUser.passwordResetExpires = Date.now() + 48 * 60 * 60 * 1000; // 48 hours
         await newUser.save();
 
-        const activationUrl = `${process.env.FRONTEND_URL || "https://novabuk.vercel.app"}/app-reset-password.html?token=${resetToken}`;
+        const activationUrl = `${process.env.FRONTEND_URL || "https://www.novabuk.com"}/app-reset-password.html?token=${resetToken}`;
 
         await sendWalkInWelcomeEmail({
           to: newUser.email,

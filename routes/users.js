@@ -358,7 +358,7 @@ router.post("/forgot-password", async (req, res) => {
     await user.save({ validateBeforeSave: false });
 
     // Build reset URL — frontend will handle this page
-    const resetUrl = `${process.env.FRONTEND_URL}/reset-password.html?token=${resetToken}`;
+    const resetUrl = `${process.env.FRONTEND_URL || "https://www.novabuk.com"}/reset-password.html?token=${resetToken}`;
     console.log("🔑 [DEV] Password Reset URL:", resetUrl);
 
     try {

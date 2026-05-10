@@ -3,7 +3,7 @@ const { Resend } = require("resend");
 const resend     = new Resend(process.env.RESEND_API_KEY);
 const FROM_EMAIL = process.env.FROM_EMAIL || "NovaBuk <noreply@novabuk.com>";
 const APP_NAME   = "NovaBuk";
-const FRONTEND   = process.env.FRONTEND_URL || "https://novabuk.vercel.app";
+const FRONTEND   = process.env.FRONTEND_URL || "https://www.novabuk.com";
 
 const sendEmail = async ({ to, subject, html }) => {
   const { data, error } = await resend.emails.send({ from: FROM_EMAIL, to, subject, html });
@@ -62,7 +62,7 @@ const sendOTPEmail = async ({ to, name, otpCode }) => {
 
 const sendWelcomeEmail = async ({ to, name, novaBukId }) => {
   const html = wrap(`
-    <h2 style="margin:0 0 8px;color:#1a1a1a;font-size:20px;">Welcome to ${APP_NAME}, ${name}! 👋</h2>
+    <h2 style="margin:0 0 8px;color:#1a1a1a;font-size:20px;">Welcome to ${APP_NAME}, ${name}! </h2>
     <p style="color:#555;line-height:1.7;margin:0 0 20px;">Your account is ready. Log symptoms, find clinics, and manage your health records — all in one place.</p>
     <div style="background:#f0f9fa;border-radius:12px;padding:18px 20px;margin-bottom:20px;border:1px solid #35bac9;">
       <p style="margin:0;font-size:11px;color:#35bac9;text-transform:uppercase;letter-spacing:1px;font-weight:700;">Your Unique NovaBuk ID</p>
