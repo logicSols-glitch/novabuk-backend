@@ -3,7 +3,11 @@ const { Resend } = require("resend");
 const resend     = new Resend(process.env.RESEND_API_KEY);
 const FROM_EMAIL = process.env.FROM_EMAIL || "NovaBuk <noreply@novabuk.com>";
 const APP_NAME   = "NovaBuk";
-const FRONTEND   = process.env.FRONTEND_URL || "https://www.novabuk.com";
+let FRONTEND = process.env.FRONTEND_URL || "https://www.novabuk.com";
+// Security/Branding Fix: Force official domain if ENV has old links
+if (FRONTEND.includes("vercel.app") || FRONTEND.includes("novabukrepo")) {
+  FRONTEND = "https://www.novabuk.com";
+}
 
 const sendEmail = async ({ to, subject, html }) => {
   const { data, error } = await resend.emails.send({ from: FROM_EMAIL, to, subject, html });

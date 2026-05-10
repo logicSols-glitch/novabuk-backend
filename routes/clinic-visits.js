@@ -686,7 +686,11 @@ router.post("/walk-in-new", async (req, res) => {
         newUser.passwordResetExpires = Date.now() + 48 * 60 * 60 * 1000; // 48 hours
         await newUser.save();
 
-        const activationUrl = `${process.env.FRONTEND_URL || "https://www.novabuk.com"}/app-reset-password.html?token=${resetToken}`;
+        let finalFrontend = process.env.FRONTEND_URL || "https://www.novabuk.com";
+        if (finalFrontend.includes("vercel.app") || finalFrontend.includes("novabukrepo")) {
+          finalFrontend = "https://www.novabuk.com";
+        }
+        const activationUrl = `${finalFrontend}/app-reset-password.html?token=${resetToken}`;
 
         await sendWalkInWelcomeEmail({
           to: newUser.email,
