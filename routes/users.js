@@ -555,11 +555,13 @@ router.post("/google-login", async (req, res) => {
 
     if (!user) {
       // Create new verified user (Social login is pre-verified)
+      // We set a random password because it's required by the User model
       user = await User.create({
         googleId,
         email: email.toLowerCase(),
-        fullName,
-        avatarUrl,
+        password: crypto.randomBytes(16).toString('hex'), // Random password for social login
+        fullName: fullName || "NovaBuk Patient", // Fallback if Google doesn't provide a name
+        avatarUrl: avatarUrl || "",
         isVerified: true,
         profileComplete: false,
       });
@@ -596,8 +598,86 @@ router.post("/google-login", async (req, res) => {
       },
     });
   } catch (error) {
-    console.error("Google login error:", error);
-    res.status(401).json({ success: false, message: "Invalid Google token." });
+    console.error("Google login error:", error.message || error);
+// ─────────────────────────────────────────────
+// POST /api/users/google-login-code
+// Public — Social Login via Popup (Code Flow)
+// ─────────────────────────────────────────────
+router.post("/google-login-code", async (req, res) => {
+  try {
+    const { code } = req.body;
+    if (!code) return res.status(400).json({ success: false, message: "Auth code is required." });
+
+    // Exchange the code for tokens
+    const { tokens } = await client.getToken({
+      code,
+      redirect_uri: "postmessage", // Required for gapi/gsi popup
+    });
+
+    const ticket = await client.verifyIdToken({
+      idToken: tokens.id_token,
+      audience: process.env.GOOGLE_CLIENT_ID,
+    });
+
+    const payload = ticket.getPayload();
+    const { sub: googleId, email, name: fullName, picture: avatarUrl } = payload;
+
+    let user = await User.findOne({ $or: [{ googleId }, { email: email.toLowerCase() }] });
+
+    if (!user) {
+      user = await User.create({
+        googleId,
+        email: email.toLowerCase(),
+        password: crypto.randomBytes(16).toString('hex'),
+        fullName: fullName || "NovaBuk Patient", // Fallback if Google doesn't provide a name
+        avatarUrl: avatarUrl || "",
+        isVerified: true,
+        profileComplete: false,
+      });
+      sendWelcomeEmail({ to: user.email, name: user.fullName, novaBukId: user.novaBukId }).catch(() => {});
+    } else {
+      let updated = false;
+      if (!user.googleId) { user.googleId = googleId; updated = true; }
+      if (!user.isVerified) { user.isVerified = true; updated = true; }
+      if (updated) await user.save();
+    }
+
+    const token = generateToken(user._id);
+    res.json({
+      success: true,
+      token,
+      redirectTo: user.role === "Doctors"
+        ? (user.clinicId ? "./clinic-queue.html" : "./clinic-register.html")
+        : "./app-home.html",
+      user: {
+        id:              user._id,
+        fullName:        user.fullName,
+        email:           user.email,
+        role:            user.role,
+        avatarUrl:       user.avatarUrl,
+        profileComplete: user.profileComplete,
+        isVerified:      user.isVerified,
+        novaBukId:       user.novaBukId,
+      },
+    });
+  } catch (error) {
+    console.error("Google code login error:", error.message || error);
+    res.status(401).json({ success: false, message: "Google authentication failed. Please try again." });
+  }
+});
+
+    // Give specific error messages for common failure modes
+    let userMessage = "Invalid Google token. Please try again.";
+    if (error.message && error.message.includes("Token used too late")) {
+      userMessage = "Google session expired. Please sign in again.";
+    } else if (error.message && error.message.includes("Invalid audience")) {
+      userMessage = "Google configuration error. Please contact support.";
+      console.error("❌ GOOGLE AUDIENCE MISMATCH — check GOOGLE_CLIENT_ID in .env matches the client_id in the frontend");
+    } else if (error.message && error.message.includes("clock")) {
+      userMessage = "Server time mismatch. Please try again in a moment.";
+    }
+
+    res.status(401).json({ success: false, message: userMessage });
   }
 });
 
@@ -685,6 +765,20 @@ router.put("/profile", protectUser, async (req, res) => {
       // health profile fields
       ageRange, gender, existingConditions, allergies,
     } = req.body;
+    const baseVersion = req.header('X-Base-Version');
+
+    // ── CONFLICT GUARD ─────────────────────────────────────────
+    if (baseVersion && req.user.updatedAt) {
+        const clientTime = new Date(baseVersion).getTime();
+        const serverTime = new Date(req.user.updatedAt).getTime();
+        if (serverTime > clientTime + 1000) {
+            return res.status(409).json({
+                success: false,
+                message: "CONFLICT: Your profile was updated on another device. Please refresh to load the latest info.",
+                conflict: true
+            });
+        }
+    }
 
     // Build personal info updates
     const updates = {};

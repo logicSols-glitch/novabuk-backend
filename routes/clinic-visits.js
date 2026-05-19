@@ -715,4 +715,87 @@ router.post("/walk-in-new", async (req, res) => {
   }
 });
 
+
+// ─────────────────────────────────────────────────────────────
+// GET /api/clinic/notifications
+// Get notifications for the doctor's clinic.
+// Uses the clinicId stored on the doctor's user document.
+// ─────────────────────────────────────────────────────────────
+router.get("/notifications", async (req, res) => {
+  try {
+    const clinicId = req.user.clinicId;
+
+    if (!clinicId) {
+      return res.status(400).json({
+        success: false,
+        message: "Doctor profile is not linked to a clinic. Please complete your profile setup.",
+      });
+    }
+
+    const query = { clinic: clinicId };
+
+    const notifications = await Notification.find(query)
+      .sort({ createdAt: -1 })
+      .limit(30);
+
+    const unreadCount = await Notification.countDocuments({ ...query, read: false });
+
+    res.json({ success: true, unreadCount, data: notifications });
+  } catch (error) {
+    console.error("Clinic notifications error:", error);
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// GET /api/clinic/notifications/unread-count
+// Lightweight — just the badge count. Called on every page load.
+// ─────────────────────────────────────────────────────────────
+router.get("/notifications/unread-count", async (req, res) => {
+  try {
+    const clinicId = req.user.clinicId;
+    if (!clinicId) return res.json({ success: true, count: 0 });
+
+    const count = await Notification.countDocuments({ clinic: clinicId, read: false });
+    res.json({ success: true, count });
+  } catch (error) {
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// PATCH /api/clinic/notifications/mark-all-read
+// Mark ALL clinic notifications as read.
+// NOTE: This MUST be registered before /:id/read so Express
+// does not match "mark-all-read" as an :id parameter.
+// ─────────────────────────────────────────────────────────────
+router.patch("/notifications/mark-all-read", async (req, res) => {
+  try {
+    const clinicId = req.user.clinicId;
+    if (!clinicId) return res.json({ success: true });
+
+    await Notification.updateMany({ clinic: clinicId, read: false }, { read: true });
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// PATCH /api/clinic/notifications/:id/read
+// Mark a single clinic notification as read.
+// ─────────────────────────────────────────────────────────────
+router.patch("/notifications/:id/read", async (req, res) => {
+  try {
+    const clinicId = req.user.clinicId;
+    await Notification.findOneAndUpdate(
+      { _id: req.params.id, clinic: clinicId },
+      { read: true }
+    );
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+});
+
 module.exports = router;

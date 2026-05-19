@@ -158,6 +158,25 @@ router.patch("/my", protectDoctor, async (req, res) => {
     }
 
     const { name, location, contactPhone, contactEmail, services, image, isOpen, openingHours } = req.body;
+    const baseVersion = req.header('X-Base-Version');
+
+    // ── CONFLICT GUARD ─────────────────────────────────────────
+    if (baseVersion) {
+        const existingClinic = await Clinic.findById(req.user.clinicId);
+        if (existingClinic && existingClinic.updatedAt) {
+            const clientTime = new Date(baseVersion).getTime();
+            const serverTime = new Date(existingClinic.updatedAt).getTime();
+            
+            // If server has a newer update than what the client saw
+            if (serverTime > clientTime + 1000) { // +1s buffer for safety
+                return res.status(409).json({
+                    success: false,
+                    message: "CONFLICT: This clinic profile was updated by someone else while you were offline. Please refresh to see the latest changes.",
+                    conflict: true
+                });
+            }
+        }
+    }
 
     const updates = {};
     if (name !== undefined) updates.name = name;
