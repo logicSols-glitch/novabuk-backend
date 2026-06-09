@@ -16,9 +16,8 @@ const { protect, authorize } = require("../middleware/auth");
 // Public routes
 router.get("/", getAllBlogs);
 router.get("/featured", getFeaturedBlogs);
-router.get("/:slug", getBlogBySlug);
 
-// Admin routes
+// Admin routes — MUST come before /:slug or Express will swallow them
 router.get(
   "/admin/all",
   protect,
@@ -36,5 +35,8 @@ router.post("/", protect, authorize("admin", "editor"), createBlog);
 router.put("/:id", protect, authorize("admin", "editor"), updateBlog);
 router.patch("/:id/publish", protect, authorize("admin"), publishBlog);
 router.delete("/:id", protect, authorize("admin"), deleteBlog);
+
+// Public slug route — MUST come last so it doesn't swallow /admin/* paths
+router.get("/:slug", getBlogBySlug);
 
 module.exports = router;

@@ -7,6 +7,7 @@ const { sendPasswordResetEmail } = require("../services/emailService");
 const Clinic      = require("../models/Clinic");
 const { protectClinic }  = require("../middleware/authClinic");
 const { protectAdmin }   = require("../middleware/auth");
+const { protectDoctor }  = require("../middleware/authDoctor");
 
 // Helper — generate JWT
 const generateToken = (id) =>
@@ -303,6 +304,146 @@ router.post("/reset-password/:token", async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// GET /api/clinic-auth/my-staff
+// Protected (Clinic Doctor) — list all staff in doctor's clinic
+// ─────────────────────────────────────────────────────────────
+router.get("/my-staff", protectDoctor, async (req, res) => {
+  try {
+    if (!req.user.clinicId) {
+      return res.status(400).json({
+        success: false,
+        message: "No clinic linked to your account.",
+      });
+    }
+
+    const staff = await ClinicStaff.find({ clinic: req.user.clinicId })
+      .sort({ createdAt: -1 })
+      .select("-password");
+
+    res.json({
+      success: true,
+      count: staff.length,
+      data: staff,
+    });
+  } catch (error) {
+    console.error("Fetch staff error:", error);
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// POST /api/clinic-auth/my-staff
+// Protected (Clinic Doctor) — create staff for doctor's clinic (Requires Pro subscription)
+// ─────────────────────────────────────────────────────────────
+router.post("/my-staff", protectDoctor, async (req, res) => {
+  try {
+    if (!req.user.clinicId) {
+      return res.status(400).json({
+        success: false,
+        message: "No clinic linked to your account.",
+      });
+    }
+
+    // Verify clinic's subscription plan is Pro
+    const clinic = await Clinic.findById(req.user.clinicId);
+    if (!clinic) {
+      return res.status(404).json({
+        success: false,
+        message: "Clinic not found.",
+      });
+    }
+
+    if (clinic.subscriptionPlan !== "Pro") {
+      return res.status(403).json({
+        success: false,
+        message: "Multiple staff and screen terminals are premium features. Please upgrade your clinic subscription to Premium Pro to use this.",
+      });
+    }
+
+    const { fullName, email, password, role } = req.body;
+
+    if (!fullName || !email || !password) {
+      return res.status(400).json({
+        success: false,
+        message: "fullName, email and password are required.",
+      });
+    }
+
+    // Check if staff email already exists
+    const existing = await ClinicStaff.findOne({ email: email.toLowerCase() });
+    if (existing) {
+      return res.status(400).json({
+        success: false,
+        message: "A staff account with this email already exists.",
+      });
+    }
+
+    const newStaff = await ClinicStaff.create({
+      clinic: req.user.clinicId,
+      fullName,
+      email: email.toLowerCase(),
+      password,
+      role: role || "nurse",
+    });
+
+    res.status(201).json({
+      success: true,
+      message: "Staff member added successfully.",
+      staff: {
+        id: newStaff._id,
+        fullName: newStaff.fullName,
+        email: newStaff.email,
+        role: newStaff.role,
+      },
+    });
+  } catch (error) {
+    console.error("Create staff error:", error);
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// DELETE /api/clinic-auth/my-staff/:id
+// Protected (Clinic Doctor) — remove staff from doctor's clinic
+// ─────────────────────────────────────────────────────────────
+router.delete("/my-staff/:id", protectDoctor, async (req, res) => {
+  try {
+    if (!req.user.clinicId) {
+      return res.status(400).json({
+        success: false,
+        message: "No clinic linked to your account.",
+      });
+    }
+
+    const staff = await ClinicStaff.findById(req.params.id);
+    if (!staff) {
+      return res.status(404).json({
+        success: false,
+        message: "Staff member not found.",
+      });
+    }
+
+    // Verify staff member belongs to the doctor's clinic
+    if (staff.clinic.toString() !== req.user.clinicId.toString()) {
+      return res.status(403).json({
+        success: false,
+        message: "Access denied. You can only delete staff members belonging to your clinic.",
+      });
+    }
+
+    await ClinicStaff.findByIdAndDelete(req.params.id);
+
+    res.json({
+      success: true,
+      message: "Staff member removed successfully.",
+    });
+  } catch (error) {
+    console.error("Delete staff error:", error);
+    res.status(500).json({ success: false, message: "Server error." });
   }
 });
 

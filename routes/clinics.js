@@ -496,4 +496,58 @@ router.get("/admin/:id/stats", protectAdmin, async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────
+// POST /api/clinics/upgrade
+// Doctor/Clinic Admin — upgrade subscription plan
+// ─────────────────────────────────────────────
+router.post("/upgrade", protectDoctor, async (req, res) => {
+  try {
+    if (!req.user.clinicId) {
+      return res.status(400).json({
+        success: false,
+        message: "No clinic linked to your account.",
+      });
+    }
+
+    const { reference, plan = "Pro" } = req.body;
+
+    if (!reference) {
+      return res.status(400).json({
+        success: false,
+        message: "Payment reference/transaction reference is required.",
+      });
+    }
+
+    // Update the clinic's plan, status, and set expiry to 30 days from now
+    const expiryDate = new Date();
+    expiryDate.setDate(expiryDate.getDate() + 30);
+
+    const clinic = await Clinic.findByIdAndUpdate(
+      req.user.clinicId,
+      {
+        subscriptionPlan: plan,
+        subscriptionStatus: "Active",
+        subscriptionExpiry: expiryDate,
+      },
+      { new: true }
+    );
+
+    if (!clinic) {
+      return res.status(404).json({
+        success: false,
+        message: "Clinic not found.",
+      });
+    }
+
+    res.json({
+      success: true,
+      message: `Clinic upgraded to ${plan} successfully.`,
+      clinic,
+    });
+  } catch (error) {
+    console.error("Upgrade error:", error);
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+});
+
 module.exports = router;
