@@ -14,6 +14,17 @@ const userSchema = new mongoose.Schema(
       unique: true,
       lowercase: true,
       trim: true,
+      validate: {
+        validator: function (v) {
+          // Ensure email has exactly one @ and is valid format
+          return (
+            /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v) &&
+            (v.match(/@/g) || []).length === 1
+          );
+        },
+        message:
+          "Invalid email format. Email must contain exactly one @ symbol.",
+      },
     },
     password: {
       type: String,
@@ -33,43 +44,47 @@ const userSchema = new mongoose.Schema(
         default: null,
       },
       existingConditions: { type: [String], default: [] },
-      allergies:           { type: [String], default: [] },
+      allergies: { type: [String], default: [] },
     },
 
     // ── EXTENDED PROFILE (Profile Settings screen) ────────
-    phone:       { type: String, default: "" },
+    phone: { type: String, default: "" },
     dateOfBirth: { type: String, default: "" },
-    age:         { type: Number, default: null },
-    address:     { type: String, default: "" },
-    city:        { type: String, default: "" },
-    state:       { type: String, default: "" },
-    avatarUrl:   { type: String, default: "" },
+    age: { type: Number, default: null },
+    address: { type: String, default: "" },
+    city: { type: String, default: "" },
+    state: { type: String, default: "" },
+    avatarUrl: { type: String, default: "" },
     emergencyContact: {
-      name:  { type: String, default: "" },
+      name: { type: String, default: "" },
       phone: { type: String, default: "" },
     },
 
     // ── PRIVACY SETTINGS (Figma — Privacy Settings screen) ──
     privacySettings: {
-      shareDataWithProviders:  { type: Boolean, default: true  },
+      shareDataWithProviders: { type: Boolean, default: true },
       marketingCommunications: { type: Boolean, default: false },
-      dataAnalytics:           { type: Boolean, default: true  },
-      thirdPartyDataSharing:   { type: Boolean, default: false },
+      dataAnalytics: { type: Boolean, default: true },
+      thirdPartyDataSharing: { type: Boolean, default: false },
       profileVisibility: {
         type: String,
-        enum: ["Private - Only me", "Healthcare providers only", "Private - Anyone"],
+        enum: [
+          "Private - Only me",
+          "Healthcare providers only",
+          "Private - Anyone",
+        ],
         default: "Private - Only me",
       },
     },
 
     // ── NOTIFICATION SETTINGS (Figma — Notification Settings screen) ──
     notificationSettings: {
-      appointmentReminders: { type: Boolean, default: true  },
-      healthTips:           { type: Boolean, default: true  },
-      clinicUpdates:        { type: Boolean, default: true  },
-      visitStatusUpdates:   { type: Boolean, default: true  },
-      smsNotifications:     { type: Boolean, default: false },
-      emailNotifications:   { type: Boolean, default: true  },
+      appointmentReminders: { type: Boolean, default: true },
+      healthTips: { type: Boolean, default: true },
+      clinicUpdates: { type: Boolean, default: true },
+      visitStatusUpdates: { type: Boolean, default: true },
+      smsNotifications: { type: Boolean, default: false },
+      emailNotifications: { type: Boolean, default: true },
     },
 
     // ── ROLE ─────────────────────────────────────────────
@@ -81,16 +96,21 @@ const userSchema = new mongoose.Schema(
 
     // ── ONBOARDING & VERIFICATION ─────────────────────────
     profileComplete: { type: Boolean, default: false },
-    isActive:        { type: Boolean, default: true  },
-    isVerified:      { type: Boolean, default: false },
-    otpCode:         { type: String,  default: null },
-    otpExpires:      { type: Date,    default: null },
-    googleId:        { type: String,  unique: true, sparse: true },
-    clinicId:        { type: mongoose.Schema.Types.ObjectId, ref: "Clinic", default: null, index: true },
+    isActive: { type: Boolean, default: true },
+    isVerified: { type: Boolean, default: false },
+    otpCode: { type: String, default: null },
+    otpExpires: { type: Date, default: null },
+    googleId: { type: String, unique: true, sparse: true },
+    clinicId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Clinic",
+      default: null,
+      index: true,
+    },
 
     // ── PASSWORD RESET ────────────────────────────────────
-    passwordResetToken:   { type: String, default: null },
-    passwordResetExpires: { type: Date,   default: null },
+    passwordResetToken: { type: String, default: null },
+    passwordResetExpires: { type: Date, default: null },
 
     // ── GLOBAL IDENTIFIER ─────────────────────────────────
     novaBukId: {
@@ -99,7 +119,7 @@ const userSchema = new mongoose.Schema(
       sparse: true,
     },
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 
 // Generate NovaBuk ID before saving

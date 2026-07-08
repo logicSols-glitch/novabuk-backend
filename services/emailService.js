@@ -1,7 +1,7 @@
 const { Resend } = require("resend");
 
-const resend     = new Resend(process.env.RESEND_API_KEY);
-const FROM_EMAIL = process.env.FROM_EMAIL || "NovaBuk <noreply@novabuk.com>";
+const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
+const FROM_EMAIL = process.env.FROM_EMAIL || process.env.RESEND_FROM_EMAIL || "NovaBuk <onboarding@resend.dev>";
 const APP_NAME   = "NovaBuk";
 let FRONTEND = process.env.FRONTEND_URL || "https://www.novabuk.com";
 // Security/Branding Fix: Force official domain if ENV has old links
@@ -10,11 +10,19 @@ if (FRONTEND.includes("vercel.app") || FRONTEND.includes("novabukrepo")) {
 }
 
 const sendEmail = async ({ to, subject, html }) => {
+  if (!resend) {
+    console.warn("⚠️ Resend is not configured. Email skipped for:", to);
+    return null;
+  }
+
   const { data, error } = await resend.emails.send({ from: FROM_EMAIL, to, subject, html });
-  if (error) { 
+  if (error) {
     console.error("❌ Email failed for:", to);
     console.error("❌ Resend Error Details:", JSON.stringify(error, null, 2));
-    throw new Error(error.message); 
+    if (error.statusCode === 403 || error.statusCode === 422) {
+      throw new Error(`${error.message}. If you are using Resend, verify your domain/email in Resend and add the recipient to your verified addresses or move out of sandbox.`);
+    }
+    throw new Error(error.message);
   }
   console.log("✅ Email sent successfully to:", to, "(ID:", data.id, ")");
   return data;

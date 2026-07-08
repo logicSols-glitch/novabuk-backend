@@ -4,7 +4,11 @@ const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
 const User = require("../models/User");
 const { protectUser } = require("../middleware/authUser");
-const { sendPasswordResetEmail, sendWelcomeEmail, sendOTPEmail } = require("../services/emailService");
+const {
+  sendPasswordResetEmail,
+  sendWelcomeEmail,
+  sendOTPEmail,
+} = require("../services/emailService");
 const { OAuth2Client } = require("google-auth-library");
 
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
@@ -28,6 +32,18 @@ router.post("/register", async (req, res) => {
       });
     }
 
+    // Validate email format strictly
+    const cleanEmail = email.trim().toLowerCase();
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    const atSymbolCount = (cleanEmail.match(/@/g) || []).length;
+
+    if (!emailRegex.test(cleanEmail) || atSymbolCount !== 1) {
+      return res.status(400).json({
+        success: false,
+        message: "Please enter a valid email address.",
+      });
+    }
+
     if (password.length < 6) {
       return res.status(400).json({
         success: false,
@@ -35,7 +51,7 @@ router.post("/register", async (req, res) => {
       });
     }
 
-    const existingUser = await User.findOne({ email: email.toLowerCase() });
+    const existingUser = await User.findOne({ email: cleanEmail });
     if (existingUser) {
       return res.status(400).json({
         success: false,
@@ -48,7 +64,7 @@ router.post("/register", async (req, res) => {
 
     const user = await User.create({
       fullName,
-      email,
+      email: cleanEmail,
       password,
       role: role || "Patient",
       otpCode,
@@ -58,14 +74,15 @@ router.post("/register", async (req, res) => {
 
     // Send OTP email - Await to ensure it's sent before responding
     try {
-      await sendOTPEmail({ to: email, name: fullName, otpCode });
+      await sendOTPEmail({ to: cleanEmail, name: fullName, otpCode });
     } catch (err) {
       console.error("OTP email failed:", err.message);
     }
 
     res.status(201).json({
       success: true,
-      message: "Account created. Please verify with the 6-digit code sent to your email.",
+      message:
+        "Account created. Please verify with the 6-digit code sent to your email.",
       email: user.email,
       redirectTo: "./verify-otp.html",
     });
@@ -92,7 +109,7 @@ router.post("/login", async (req, res) => {
 
     // Explicitly select password (it's excluded by default)
     const user = await User.findOne({ email: email.toLowerCase() }).select(
-      "+password"
+      "+password",
     );
 
     if (!user || !(await user.comparePassword(password))) {
@@ -113,7 +130,7 @@ router.post("/login", async (req, res) => {
       // Automatically generate and send a new OTP
       const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
       const otpExpires = Date.now() + 15 * 60 * 1000;
-      
+
       user.otpCode = otpCode;
       user.otpExpires = otpExpires;
       await user.save();
@@ -126,10 +143,11 @@ router.post("/login", async (req, res) => {
 
       return res.status(401).json({
         success: false,
-        message: "Please verify your email before logging in. A new code has been sent.",
+        message:
+          "Please verify your email before logging in. A new code has been sent.",
         email: user.email,
         isVerified: false,
-        redirectTo: "./verify-otp.html"
+        redirectTo: "./verify-otp.html",
       });
     }
 
@@ -145,21 +163,24 @@ router.post("/login", async (req, res) => {
     res.json({
       success: true,
       message: "Login successful.",
-      token:   loginToken,
-      redirectTo: user.role === "Doctors"
-        ? (user.clinicId ? "./clinic-queue.html" : "./clinic-register.html")
-        : "./app-home.html",
+      token: loginToken,
+      redirectTo:
+        user.role === "Doctors"
+          ? user.clinicId
+            ? "./clinic-queue.html"
+            : "./clinic-register.html"
+          : "./app-home.html",
       user: {
-        id:              user._id,
-        fullName:        user.fullName,
-        email:           user.email,
-        role:            user.role,
-        avatarUrl:       user.avatarUrl,
+        id: user._id,
+        fullName: user.fullName,
+        email: user.email,
+        role: user.role,
+        avatarUrl: user.avatarUrl,
         profileComplete: user.profileComplete,
-        isVerified:      user.isVerified,
-        clinicId:        user.clinicId   || null,
-        clinicName:      user.clinicName || "",
-        novaBukId:       user.novaBukId,
+        isVerified: user.isVerified,
+        clinicId: user.clinicId || null,
+        clinicName: user.clinicName || "",
+        novaBukId: user.novaBukId,
       },
     });
   } catch (error) {
@@ -210,7 +231,14 @@ router.get("/me", protectUser, async (req, res) => {
 // ─────────────────────────────────────────────
 router.put("/health-profile", protectUser, async (req, res) => {
   try {
-    const { ageRange, gender, existingConditions, allergies, dateOfBirth, age } = req.body;
+    const {
+      ageRange,
+      gender,
+      existingConditions,
+      allergies,
+      dateOfBirth,
+      age,
+    } = req.body;
 
     const user = await User.findByIdAndUpdate(
       req.user._id,
@@ -220,7 +248,7 @@ router.put("/health-profile", protectUser, async (req, res) => {
         age: age || req.user.age,
         profileComplete: true, // mark onboarding done
       },
-      { new: true, runValidators: true }
+      { new: true, runValidators: true },
     );
 
     res.json({
@@ -246,17 +274,28 @@ router.put("/health-profile", protectUser, async (req, res) => {
 // ─────────────────────────────────────────────
 router.put("/update", protectUser, async (req, res) => {
   try {
-    const { fullName, email, phone, dateOfBirth, address, city, state, avatarUrl, emergencyContact } = req.body;
+    const {
+      fullName,
+      email,
+      phone,
+      dateOfBirth,
+      address,
+      city,
+      state,
+      avatarUrl,
+      emergencyContact,
+    } = req.body;
     const updates = {};
-    if (fullName)         updates.fullName = fullName;
-    if (email)            updates.email    = email.toLowerCase();
-    if (phone       !== undefined) updates.phone       = phone;
+    if (fullName) updates.fullName = fullName;
+    if (email) updates.email = email.toLowerCase();
+    if (phone !== undefined) updates.phone = phone;
     if (dateOfBirth !== undefined) updates.dateOfBirth = dateOfBirth;
-    if (address     !== undefined) updates.address     = address;
-    if (city        !== undefined) updates.city        = city;
-    if (state       !== undefined) updates.state       = state;
-    if (avatarUrl   !== undefined) updates.avatarUrl   = avatarUrl;
-    if (emergencyContact !== undefined) updates.emergencyContact = emergencyContact;
+    if (address !== undefined) updates.address = address;
+    if (city !== undefined) updates.city = city;
+    if (state !== undefined) updates.state = state;
+    if (avatarUrl !== undefined) updates.avatarUrl = avatarUrl;
+    if (emergencyContact !== undefined)
+      updates.emergencyContact = emergencyContact;
 
     const user = await User.findByIdAndUpdate(req.user._id, updates, {
       new: true,
@@ -340,7 +379,8 @@ router.post("/forgot-password", async (req, res) => {
     if (!user) {
       return res.json({
         success: true,
-        message: "If an account with that email exists, a reset link has been sent.",
+        message:
+          "If an account with that email exists, a reset link has been sent.",
       });
     }
 
@@ -359,7 +399,10 @@ router.post("/forgot-password", async (req, res) => {
 
     // Build reset URL — frontend will handle this page
     let finalFrontend = process.env.FRONTEND_URL || "https://www.novabuk.com";
-    if (finalFrontend.includes("vercel.app") || finalFrontend.includes("novabukrepo")) {
+    if (
+      finalFrontend.includes("vercel.app") ||
+      finalFrontend.includes("novabukrepo")
+    ) {
       finalFrontend = "https://www.novabuk.com";
     }
     const resetUrl = `${finalFrontend}/reset-password.html?token=${resetToken}`;
@@ -374,7 +417,8 @@ router.post("/forgot-password", async (req, res) => {
 
       res.json({
         success: true,
-        message: "If an account with that email exists, a reset link has been sent.",
+        message:
+          "If an account with that email exists, a reset link has been sent.",
       });
     } catch (emailError) {
       // If email fails, clear the token so user can try again
@@ -424,7 +468,8 @@ router.post("/reset-password/:token", async (req, res) => {
     if (!user) {
       return res.status(400).json({
         success: false,
-        message: "Reset link is invalid or has expired. Please request a new one.",
+        message:
+          "Reset link is invalid or has expired. Please request a new one.",
       });
     }
 
@@ -453,13 +498,17 @@ router.post("/verify-otp", async (req, res) => {
     const { email, otpCode } = req.body;
 
     if (!email || !otpCode) {
-      return res.status(400).json({ success: false, message: "Email and code are required." });
+      return res
+        .status(400)
+        .json({ success: false, message: "Email and code are required." });
     }
 
     const user = await User.findOne({ email: email.toLowerCase() });
 
     if (!user) {
-      return res.status(404).json({ success: false, message: "User not found." });
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found." });
     }
 
     // Safety net: If already verified (e.g. from a different tab), just log them in
@@ -469,26 +518,34 @@ router.post("/verify-otp", async (req, res) => {
         success: true,
         message: "Account already verified. Logging you in...",
         token,
-        redirectTo: user.role === "Doctors"
-          ? (user.clinicId ? "./clinic-queue.html" : "./clinic-register.html")
-          : "./app-home.html",
+        redirectTo:
+          user.role === "Doctors"
+            ? user.clinicId
+              ? "./clinic-queue.html"
+              : "./clinic-register.html"
+            : "./app-home.html",
         user: {
-          id:              user._id,
-          fullName:        user.fullName,
-          email:           user.email,
-          role:            user.role,
-          avatarUrl:       user.avatarUrl,
+          id: user._id,
+          fullName: user.fullName,
+          email: user.email,
+          role: user.role,
+          avatarUrl: user.avatarUrl,
           profileComplete: user.profileComplete,
-          isVerified:      true,
-          clinicId:        user.clinicId   || null,
-          clinicName:      user.clinicName || "",
+          isVerified: true,
+          clinicId: user.clinicId || null,
+          clinicName: user.clinicName || "",
         },
       });
     }
 
     // Check if code matches and hasn't expired
     if (user.otpCode !== otpCode || user.otpExpires < Date.now()) {
-      return res.status(400).json({ success: false, message: "Invalid or expired verification code." });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "Invalid or expired verification code.",
+        });
     }
 
     user.isVerified = true;
@@ -497,7 +554,11 @@ router.post("/verify-otp", async (req, res) => {
     await user.save();
 
     // Now send the welcome email
-    sendWelcomeEmail({ to: user.email, name: user.fullName, novaBukId: user.novaBukId }).catch(() => {});
+    sendWelcomeEmail({
+      to: user.email,
+      name: user.fullName,
+      novaBukId: user.novaBukId,
+    }).catch(() => {});
 
     const token = generateToken(user._id);
 
@@ -505,19 +566,22 @@ router.post("/verify-otp", async (req, res) => {
       success: true,
       message: "Email verified successfully!",
       token,
-      redirectTo: user.role === "Doctors"
-        ? (user.clinicId ? "./clinic-queue.html" : "./clinic-register.html")
-        : "./app-home.html",
+      redirectTo:
+        user.role === "Doctors"
+          ? user.clinicId
+            ? "./clinic-queue.html"
+            : "./clinic-register.html"
+          : "./app-home.html",
       user: {
-        id:              user._id,
-        fullName:        user.fullName,
-        email:           user.email,
-        role:            user.role,
-        avatarUrl:       user.avatarUrl,
+        id: user._id,
+        fullName: user.fullName,
+        email: user.email,
+        role: user.role,
+        avatarUrl: user.avatarUrl,
         profileComplete: user.profileComplete,
-        isVerified:      user.isVerified,
-        clinicId:        user.clinicId   || null,
-        clinicName:      user.clinicName || "",
+        isVerified: user.isVerified,
+        clinicId: user.clinicId || null,
+        clinicName: user.clinicName || "",
       },
     });
   } catch (error) {
@@ -535,44 +599,73 @@ router.post("/google-login", async (req, res) => {
     const { idToken } = req.body;
 
     if (!idToken) {
-      return res.status(400).json({ success: false, message: "Google token is required." });
+      return res
+        .status(400)
+        .json({ success: false, message: "Google token is required." });
     }
 
-    // Verify the Google ID Token
+    if (!process.env.GOOGLE_CLIENT_ID) {
+      return res
+        .status(500)
+        .json({
+          success: false,
+          message: "Google sign-in is not configured on the server.",
+        });
+    }
+
     const ticket = await client.verifyIdToken({
       idToken,
       audience: process.env.GOOGLE_CLIENT_ID,
     });
-    
+
     const payload = ticket.getPayload();
-    const { sub: googleId, email, name: fullName, picture: avatarUrl } = payload;
+    const {
+      sub: googleId,
+      email,
+      name: fullName,
+      picture: avatarUrl,
+    } = payload;
 
     if (!email) {
-      return res.status(400).json({ success: false, message: "Email not provided by Google." });
+      return res
+        .status(400)
+        .json({ success: false, message: "Email not provided by Google." });
     }
 
-    let user = await User.findOne({ $or: [{ googleId }, { email: email.toLowerCase() }] });
+    let user = await User.findOne({
+      $or: [{ googleId }, { email: email.toLowerCase() }],
+    });
 
     if (!user) {
-      // Create new verified user (Social login is pre-verified)
-      // We set a random password because it's required by the User model
       user = await User.create({
         googleId,
         email: email.toLowerCase(),
-        password: crypto.randomBytes(16).toString('hex'), // Random password for social login
-        fullName: fullName || "NovaBuk Patient", // Fallback if Google doesn't provide a name
+        password: crypto.randomBytes(16).toString("hex"),
+        fullName: fullName || "NovaBuk Patient",
         avatarUrl: avatarUrl || "",
         isVerified: true,
         profileComplete: false,
       });
-      sendWelcomeEmail({ to: user.email, name: user.fullName, novaBukId: user.novaBukId }).catch(() => {});
+      sendWelcomeEmail({
+        to: user.email,
+        name: user.fullName,
+        novaBukId: user.novaBukId,
+      }).catch(() => {});
     } else {
-      // User exists — ensure they are verified and linked to Google
       let updated = false;
-      if (!user.googleId) { user.googleId = googleId; updated = true; }
-      if (!user.isVerified) { user.isVerified = true; updated = true; }
-      if (!user.avatarUrl && avatarUrl) { user.avatarUrl = avatarUrl; updated = true; }
-      
+      if (!user.googleId) {
+        user.googleId = googleId;
+        updated = true;
+      }
+      if (!user.isVerified) {
+        user.isVerified = true;
+        updated = true;
+      }
+      if (!user.avatarUrl && avatarUrl) {
+        user.avatarUrl = avatarUrl;
+        updated = true;
+      }
+
       if (updated) await user.save();
     }
 
@@ -581,24 +674,44 @@ router.post("/google-login", async (req, res) => {
     res.json({
       success: true,
       token,
-      redirectTo: user.role === "Doctors"
-        ? (user.clinicId ? "./clinic-queue.html" : "./clinic-register.html")
-        : "./app-home.html",
+      redirectTo:
+        user.role === "Doctors"
+          ? user.clinicId
+            ? "./clinic-queue.html"
+            : "./clinic-register.html"
+          : "./app-home.html",
       user: {
-        id:              user._id,
-        fullName:        user.fullName,
-        email:           user.email,
-        role:            user.role,
-        avatarUrl:       user.avatarUrl,
+        id: user._id,
+        fullName: user.fullName,
+        email: user.email,
+        role: user.role,
+        avatarUrl: user.avatarUrl,
         profileComplete: user.profileComplete,
-        isVerified:      user.isVerified,
-        clinicId:        user.clinicId   || null,
-        clinicName:      user.clinicName || "",
-        novaBukId:       user.novaBukId,
+        isVerified: user.isVerified,
+        clinicId: user.clinicId || null,
+        clinicName: user.clinicName || "",
+        novaBukId: user.novaBukId,
       },
     });
   } catch (error) {
-    console.error("Google login error:", error.message || error);
+    console.error("Google login error:", error?.message || error);
+
+    let userMessage = "Invalid Google token. Please try again.";
+    if (error?.message?.includes("Token used too late")) {
+      userMessage = "Google session expired. Please sign in again.";
+    } else if (error?.message?.includes("Invalid audience")) {
+      userMessage = "Google configuration error. Please contact support.";
+      console.error(
+        "❌ GOOGLE AUDIENCE MISMATCH — check GOOGLE_CLIENT_ID in .env matches the client_id in the frontend",
+      );
+    } else if (error?.message?.includes("clock")) {
+      userMessage = "Server time mismatch. Please try again in a moment.";
+    }
+
+    res.status(401).json({ success: false, message: userMessage });
+  }
+});
+
 // ─────────────────────────────────────────────
 // POST /api/users/google-login-code
 // Public — Social Login via Popup (Code Flow)
@@ -606,12 +719,23 @@ router.post("/google-login", async (req, res) => {
 router.post("/google-login-code", async (req, res) => {
   try {
     const { code } = req.body;
-    if (!code) return res.status(400).json({ success: false, message: "Auth code is required." });
+    if (!code)
+      return res
+        .status(400)
+        .json({ success: false, message: "Auth code is required." });
 
-    // Exchange the code for tokens
+    if (!process.env.GOOGLE_CLIENT_ID) {
+      return res
+        .status(500)
+        .json({
+          success: false,
+          message: "Google sign-in is not configured on the server.",
+        });
+    }
+
     const { tokens } = await client.getToken({
       code,
-      redirect_uri: "postmessage", // Required for gapi/gsi popup
+      redirect_uri: "postmessage",
     });
 
     const ticket = await client.verifyIdToken({
@@ -620,25 +744,42 @@ router.post("/google-login-code", async (req, res) => {
     });
 
     const payload = ticket.getPayload();
-    const { sub: googleId, email, name: fullName, picture: avatarUrl } = payload;
+    const {
+      sub: googleId,
+      email,
+      name: fullName,
+      picture: avatarUrl,
+    } = payload;
 
-    let user = await User.findOne({ $or: [{ googleId }, { email: email.toLowerCase() }] });
+    let user = await User.findOne({
+      $or: [{ googleId }, { email: email.toLowerCase() }],
+    });
 
     if (!user) {
       user = await User.create({
         googleId,
         email: email.toLowerCase(),
-        password: crypto.randomBytes(16).toString('hex'),
-        fullName: fullName || "NovaBuk Patient", // Fallback if Google doesn't provide a name
+        password: crypto.randomBytes(16).toString("hex"),
+        fullName: fullName || "NovaBuk Patient",
         avatarUrl: avatarUrl || "",
         isVerified: true,
         profileComplete: false,
       });
-      sendWelcomeEmail({ to: user.email, name: user.fullName, novaBukId: user.novaBukId }).catch(() => {});
+      sendWelcomeEmail({
+        to: user.email,
+        name: user.fullName,
+        novaBukId: user.novaBukId,
+      }).catch(() => {});
     } else {
       let updated = false;
-      if (!user.googleId) { user.googleId = googleId; updated = true; }
-      if (!user.isVerified) { user.isVerified = true; updated = true; }
+      if (!user.googleId) {
+        user.googleId = googleId;
+        updated = true;
+      }
+      if (!user.isVerified) {
+        user.isVerified = true;
+        updated = true;
+      }
       if (updated) await user.save();
     }
 
@@ -646,38 +787,31 @@ router.post("/google-login-code", async (req, res) => {
     res.json({
       success: true,
       token,
-      redirectTo: user.role === "Doctors"
-        ? (user.clinicId ? "./clinic-queue.html" : "./clinic-register.html")
-        : "./app-home.html",
+      redirectTo:
+        user.role === "Doctors"
+          ? user.clinicId
+            ? "./clinic-queue.html"
+            : "./clinic-register.html"
+          : "./app-home.html",
       user: {
-        id:              user._id,
-        fullName:        user.fullName,
-        email:           user.email,
-        role:            user.role,
-        avatarUrl:       user.avatarUrl,
+        id: user._id,
+        fullName: user.fullName,
+        email: user.email,
+        role: user.role,
+        avatarUrl: user.avatarUrl,
         profileComplete: user.profileComplete,
-        isVerified:      user.isVerified,
-        novaBukId:       user.novaBukId,
+        isVerified: user.isVerified,
+        novaBukId: user.novaBukId,
       },
     });
   } catch (error) {
-    console.error("Google code login error:", error.message || error);
-    res.status(401).json({ success: false, message: "Google authentication failed. Please try again." });
-  }
-});
-
-    // Give specific error messages for common failure modes
-    let userMessage = "Invalid Google token. Please try again.";
-    if (error.message && error.message.includes("Token used too late")) {
-      userMessage = "Google session expired. Please sign in again.";
-    } else if (error.message && error.message.includes("Invalid audience")) {
-      userMessage = "Google configuration error. Please contact support.";
-      console.error("❌ GOOGLE AUDIENCE MISMATCH — check GOOGLE_CLIENT_ID in .env matches the client_id in the frontend");
-    } else if (error.message && error.message.includes("clock")) {
-      userMessage = "Server time mismatch. Please try again in a moment.";
-    }
-
-    res.status(401).json({ success: false, message: userMessage });
+    console.error("Google code login error:", error?.message || error);
+    res
+      .status(401)
+      .json({
+        success: false,
+        message: "Google authentication failed. Please try again.",
+      });
   }
 });
 
@@ -688,16 +822,27 @@ router.post("/google-login-code", async (req, res) => {
 router.post("/resend-otp", async (req, res) => {
   try {
     const { email } = req.body;
-    if (!email) return res.status(400).json({ success: false, message: "Email is required." });
+    if (!email)
+      return res
+        .status(400)
+        .json({ success: false, message: "Email is required." });
 
     const user = await User.findOne({ email: email.toLowerCase() });
     if (!user) {
       // Don't reveal if user exists for security, but we know they exist if they are on the OTP page
-      return res.json({ success: true, message: "If an account exists, a new code has been sent." });
+      return res.json({
+        success: true,
+        message: "If an account exists, a new code has been sent.",
+      });
     }
 
     if (user.isVerified) {
-      return res.status(400).json({ success: false, message: "Account already verified. Please log in." });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "Account already verified. Please log in.",
+        });
     }
 
     const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
@@ -715,7 +860,6 @@ router.post("/resend-otp", async (req, res) => {
     res.status(500).json({ success: false, message: "Server error." });
   }
 });
-
 
 // ─────────────────────────────────────────────
 // GET /api/users/settings
@@ -751,7 +895,6 @@ router.get("/settings", protectUser, async (req, res) => {
   }
 });
 
-
 // ─────────────────────────────────────────────
 // PUT /api/users/profile
 // Protected — save ALL profile data in one call
@@ -760,51 +903,70 @@ router.get("/settings", protectUser, async (req, res) => {
 router.put("/profile", protectUser, async (req, res) => {
   try {
     const {
-      fullName, email, phone, dateOfBirth, age, address, city, state,
-      avatarUrl, emergencyContact,
+      fullName,
+      email,
+      phone,
+      dateOfBirth,
+      age,
+      address,
+      city,
+      state,
+      avatarUrl,
+      emergencyContact,
       // health profile fields
-      ageRange, gender, existingConditions, allergies,
+      ageRange,
+      gender,
+      existingConditions,
+      allergies,
     } = req.body;
-    const baseVersion = req.header('X-Base-Version');
+    const baseVersion = req.header("X-Base-Version");
 
     // ── CONFLICT GUARD ─────────────────────────────────────────
     if (baseVersion && req.user.updatedAt) {
-        const clientTime = new Date(baseVersion).getTime();
-        const serverTime = new Date(req.user.updatedAt).getTime();
-        if (serverTime > clientTime + 1000) {
-            return res.status(409).json({
-                success: false,
-                message: "CONFLICT: Your profile was updated on another device. Please refresh to load the latest info.",
-                conflict: true
-            });
-        }
+      const clientTime = new Date(baseVersion).getTime();
+      const serverTime = new Date(req.user.updatedAt).getTime();
+      if (serverTime > clientTime + 1000) {
+        return res.status(409).json({
+          success: false,
+          message:
+            "CONFLICT: Your profile was updated on another device. Please refresh to load the latest info.",
+          conflict: true,
+        });
+      }
     }
 
     // Build personal info updates
     const updates = {};
-    if (fullName)            updates.fullName    = fullName;
-    if (email)               updates.email       = email.toLowerCase();
-    if (phone      !== undefined) updates.phone      = phone;
-    if (dateOfBirth!== undefined) updates.dateOfBirth = dateOfBirth;
-    if (age        !== undefined) updates.age         = age;
-    if (address    !== undefined) updates.address    = address;
-    if (city       !== undefined) updates.city       = city;
-    if (state      !== undefined) updates.state      = state;
-    if (avatarUrl  !== undefined) updates.avatarUrl  = avatarUrl;
-    if (emergencyContact !== undefined) updates.emergencyContact = emergencyContact;
+    if (fullName) updates.fullName = fullName;
+    if (email) updates.email = email.toLowerCase();
+    if (phone !== undefined) updates.phone = phone;
+    if (dateOfBirth !== undefined) updates.dateOfBirth = dateOfBirth;
+    if (age !== undefined) updates.age = age;
+    if (address !== undefined) updates.address = address;
+    if (city !== undefined) updates.city = city;
+    if (state !== undefined) updates.state = state;
+    if (avatarUrl !== undefined) updates.avatarUrl = avatarUrl;
+    if (emergencyContact !== undefined)
+      updates.emergencyContact = emergencyContact;
 
     // Always update health profile fields if any were sent
-    const hasHealthData = ageRange !== undefined || gender !== undefined ||
-                          existingConditions !== undefined || allergies !== undefined;
+    const hasHealthData =
+      ageRange !== undefined ||
+      gender !== undefined ||
+      existingConditions !== undefined ||
+      allergies !== undefined;
     if (hasHealthData) {
       // Fetch existing health profile to avoid wiping fields not sent
       const current = await User.findById(req.user._id);
       const hp = current.healthProfile || {};
       updates.healthProfile = {
-        ageRange:           ageRange           !== undefined ? ageRange           : hp.ageRange,
-        gender:             gender             !== undefined ? gender             : hp.gender,
-        existingConditions: existingConditions !== undefined ? existingConditions : hp.existingConditions,
-        allergies:          allergies          !== undefined ? allergies          : hp.allergies,
+        ageRange: ageRange !== undefined ? ageRange : hp.ageRange,
+        gender: gender !== undefined ? gender : hp.gender,
+        existingConditions:
+          existingConditions !== undefined
+            ? existingConditions
+            : hp.existingConditions,
+        allergies: allergies !== undefined ? allergies : hp.allergies,
       };
       updates.profileComplete = true;
     }
@@ -850,16 +1012,23 @@ router.put("/privacy-settings", protectUser, async (req, res) => {
 
     // Build update object — only update fields that were sent
     const updates = {};
-    if (shareDataWithProviders  !== undefined) updates["privacySettings.shareDataWithProviders"]  = shareDataWithProviders;
-    if (marketingCommunications !== undefined) updates["privacySettings.marketingCommunications"] = marketingCommunications;
-    if (dataAnalytics           !== undefined) updates["privacySettings.dataAnalytics"]           = dataAnalytics;
-    if (thirdPartyDataSharing   !== undefined) updates["privacySettings.thirdPartyDataSharing"]   = thirdPartyDataSharing;
-    if (profileVisibility       !== undefined) updates["privacySettings.profileVisibility"]       = profileVisibility;
+    if (shareDataWithProviders !== undefined)
+      updates["privacySettings.shareDataWithProviders"] =
+        shareDataWithProviders;
+    if (marketingCommunications !== undefined)
+      updates["privacySettings.marketingCommunications"] =
+        marketingCommunications;
+    if (dataAnalytics !== undefined)
+      updates["privacySettings.dataAnalytics"] = dataAnalytics;
+    if (thirdPartyDataSharing !== undefined)
+      updates["privacySettings.thirdPartyDataSharing"] = thirdPartyDataSharing;
+    if (profileVisibility !== undefined)
+      updates["privacySettings.profileVisibility"] = profileVisibility;
 
     const user = await User.findByIdAndUpdate(
       req.user._id,
       { $set: updates },
-      { new: true, runValidators: true }
+      { new: true, runValidators: true },
     );
 
     res.json({
@@ -891,17 +1060,24 @@ router.put("/notification-settings", protectUser, async (req, res) => {
 
     // Build update object — only update fields that were sent
     const updates = {};
-    if (appointmentReminders !== undefined) updates["notificationSettings.appointmentReminders"] = appointmentReminders;
-    if (healthTips           !== undefined) updates["notificationSettings.healthTips"]           = healthTips;
-    if (clinicUpdates        !== undefined) updates["notificationSettings.clinicUpdates"]        = clinicUpdates;
-    if (visitStatusUpdates   !== undefined) updates["notificationSettings.visitStatusUpdates"]   = visitStatusUpdates;
-    if (smsNotifications     !== undefined) updates["notificationSettings.smsNotifications"]     = smsNotifications;
-    if (emailNotifications   !== undefined) updates["notificationSettings.emailNotifications"]   = emailNotifications;
+    if (appointmentReminders !== undefined)
+      updates["notificationSettings.appointmentReminders"] =
+        appointmentReminders;
+    if (healthTips !== undefined)
+      updates["notificationSettings.healthTips"] = healthTips;
+    if (clinicUpdates !== undefined)
+      updates["notificationSettings.clinicUpdates"] = clinicUpdates;
+    if (visitStatusUpdates !== undefined)
+      updates["notificationSettings.visitStatusUpdates"] = visitStatusUpdates;
+    if (smsNotifications !== undefined)
+      updates["notificationSettings.smsNotifications"] = smsNotifications;
+    if (emailNotifications !== undefined)
+      updates["notificationSettings.emailNotifications"] = emailNotifications;
 
     const user = await User.findByIdAndUpdate(
       req.user._id,
       { $set: updates },
-      { new: true, runValidators: true }
+      { new: true, runValidators: true },
     );
 
     res.json({
@@ -956,12 +1132,18 @@ router.get("/admin/all", protectAdmin, async (req, res) => {
 router.patch("/admin/:id/toggle", protectAdmin, async (req, res) => {
   try {
     const user = await User.findById(req.params.id);
-    if (!user) return res.status(404).json({ success: false, message: "User not found" });
-    
+    if (!user)
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found" });
+
     user.isActive = !user.isActive;
     await user.save();
-    
-    res.json({ success: true, message: `User ${user.isActive ? 'activated' : 'deactivated'}` });
+
+    res.json({
+      success: true,
+      message: `User ${user.isActive ? "activated" : "deactivated"}`,
+    });
   } catch (error) {
     res.status(500).json({ success: false, message: "Server error" });
   }
@@ -970,9 +1152,12 @@ router.patch("/admin/:id/toggle", protectAdmin, async (req, res) => {
 // Admin: Generate missing NovaBuk IDs
 router.post("/admin/generate-ids", protectAdmin, async (req, res) => {
   try {
-    const users = await User.find({ role: "Patient", novaBukId: { $exists: false } });
+    const users = await User.find({
+      role: "Patient",
+      novaBukId: { $exists: false },
+    });
     let count = 0;
-    
+
     for (const user of users) {
       if (!user.novaBukId) {
         const random = Math.floor(1000 + Math.random() * 9000);
@@ -981,14 +1166,18 @@ router.post("/admin/generate-ids", protectAdmin, async (req, res) => {
         count++;
       }
     }
-    
-    res.json({ success: true, message: `Successfully generated IDs for ${count} users.` });
+
+    res.json({
+      success: true,
+      message: `Successfully generated IDs for ${count} users.`,
+    });
   } catch (error) {
     console.error("ID Generation Error:", error);
-    res.status(500).json({ success: false, message: "Server error during ID generation." });
+    res
+      .status(500)
+      .json({ success: false, message: "Server error during ID generation." });
   }
 });
-
 
 module.exports = router;
 
@@ -998,7 +1187,7 @@ module.exports = router;
 router.post("/logout", (req, res) => {
   res.clearCookie("novabuk_token", {
     httpOnly: true,
-    secure:   process.env.NODE_ENV === "production",
+    secure: process.env.NODE_ENV === "production",
     sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
   });
   res.json({ success: true, message: "Logged out." });
