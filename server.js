@@ -58,6 +58,9 @@ if (process.env.NODE_ENV !== "test") {
   connectDB();
 }
 
+const { startReminderScheduler } = require("./services/reminderScheduler");
+
+
 // ── ROUTES — existing ────────────────────────────────────
 app.use("/api/blogs",   require("./routes/blogs"));
 app.use("/api/tips",    require("./routes/tips"));

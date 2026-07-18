@@ -6,7 +6,7 @@ const Clinic = require("../models/Clinic");
 const Notification = require("../models/notification");
 const Appointment = require("../models/Appointment");
 const MedicationReminder = require("../models/MedicationReminder");
-const { sendPushNotification, createCalendarEvent } = require("../services/reminderService");
+const PrivateNote = require("../models/PrivateNote");
 const { protectClinicPortal } = require("../middleware/protectClinicPortal");
 const { requireRole, requireClinicalRole } = require("../middleware/requireRole");
 const { sendVisitConfirmationEmail, sendWalkInWelcomeEmail } = require("../services/emailService");
@@ -428,6 +428,12 @@ router.patch("/visits/:id/complete", requireRole("doctor", "nurse"), async (req,
         visit: visit._id,
         scheduledAt,
       });
+
+      // Lazy require — avoids a circular-dependency bug where
+      // reminderService's exports came back undefined if required at
+      // the top of this file (same pattern already used for
+      // checkSeatLimit elsewhere in this codebase, for the same reason).
+      const { sendPushNotification, createCalendarEvent } = require("../services/reminderService");
 
       // Fire the (currently stubbed) notification channels — safe to
       // call now, each degrades to a no-op + log until its real
@@ -920,6 +926,137 @@ router.patch("/notifications/:id/read", async (req, res) => {
     );
     res.json({ success: true });
   } catch (error) {
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// PRIVATE / SHARED DOCTOR NOTES
+// Completely separate from Visit's diagnosis/prescription/advice/
+// clinicNotes fields (which any doctor+nurse already sees, and which
+// get stripped from receptionist/pharmacist/lab_tech responses).
+//
+// These notes are DOCTOR-ONLY, full stop, regardless of visibility:
+//   - "private": only the authoring doctor ever sees it
+//   - "shared":  any doctor in the clinic sees it (record-keeping,
+//                handoff, second opinions)
+// Nurse, receptionist, pharmacist, lab_tech, and the patient
+// themselves NEVER see these notes under any circumstance — that's
+// enforced by requireClinicalRole() gating the routes entirely
+// (not just filtering the response), so there's no path where a
+// non-doctor role can even reach this data.
+// ─────────────────────────────────────────────────────────────
+
+// POST /api/clinic/patients/:patientId/private-notes
+router.post(
+  "/patients/:patientId/private-notes",
+  requireClinicalRole(),
+  async (req, res) => {
+    try {
+      const { content, visibility, visitId } = req.body;
+
+      if (!content || !content.trim()) {
+        return res.status(400).json({
+          success: false,
+          message: "Note content is required.",
+        });
+      }
+
+      const note = await PrivateNote.create({
+        clinic: req.actor.clinicId,
+        patient: req.params.patientId,
+        visit: visitId || null,
+        authorId: req.actor.id,
+        authorType: req.actor.isOwner ? "User" : "ClinicStaff",
+        authorName: req.actor.fullName,
+        content: content.trim(),
+        visibility: visibility === "shared" ? "shared" : "private",
+      });
+
+      res.status(201).json({ success: true, data: note });
+    } catch (error) {
+      console.error("Create private note error:", error);
+      res.status(500).json({ success: false, message: "Server error." });
+    }
+  }
+);
+
+// GET /api/clinic/patients/:patientId/private-notes
+// Returns: this doctor's own notes (private + shared) PLUS other
+// doctors' "shared" notes. Never another doctor's private notes.
+router.get(
+  "/patients/:patientId/private-notes",
+  requireClinicalRole(),
+  async (req, res) => {
+    try {
+      const notes = await PrivateNote.find({
+        clinic: req.actor.clinicId,
+        patient: req.params.patientId,
+        $or: [
+          { authorId: req.actor.id }, // your own — private or shared
+          { visibility: "shared" }, // anyone else's, only if shared
+        ],
+      }).sort({ createdAt: -1 });
+
+      // Flag which notes belong to the requester, so the frontend can
+      // show "Edit/Delete" only on the doctor's own notes.
+      const data = notes.map((n) => ({
+        ...n.toObject(),
+        isOwnNote: n.authorId.toString() === req.actor.id.toString(),
+      }));
+
+      res.json({ success: true, data });
+    } catch (error) {
+      console.error("Fetch private notes error:", error);
+      res.status(500).json({ success: false, message: "Server error." });
+    }
+  }
+);
+
+// PATCH /api/clinic/private-notes/:id
+// Edit content or toggle visibility — author only, not just any doctor.
+router.patch("/private-notes/:id", requireClinicalRole(), async (req, res) => {
+  try {
+    const note = await PrivateNote.findById(req.params.id);
+    if (!note) {
+      return res.status(404).json({ success: false, message: "Note not found." });
+    }
+    if (note.authorId.toString() !== req.actor.id.toString()) {
+      return res.status(403).json({
+        success: false,
+        message: "You can only edit your own notes.",
+      });
+    }
+
+    const { content, visibility } = req.body;
+    if (content !== undefined) note.content = content.trim();
+    if (visibility !== undefined) note.visibility = visibility === "shared" ? "shared" : "private";
+    await note.save();
+
+    res.json({ success: true, data: note });
+  } catch (error) {
+    console.error("Update private note error:", error);
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+});
+
+// DELETE /api/clinic/private-notes/:id — author only
+router.delete("/private-notes/:id", requireClinicalRole(), async (req, res) => {
+  try {
+    const note = await PrivateNote.findById(req.params.id);
+    if (!note) {
+      return res.status(404).json({ success: false, message: "Note not found." });
+    }
+    if (note.authorId.toString() !== req.actor.id.toString()) {
+      return res.status(403).json({
+        success: false,
+        message: "You can only delete your own notes.",
+      });
+    }
+    await PrivateNote.findByIdAndDelete(req.params.id);
+    res.json({ success: true, message: "Note deleted." });
+  } catch (error) {
+    console.error("Delete private note error:", error);
     res.status(500).json({ success: false, message: "Server error." });
   }
 });

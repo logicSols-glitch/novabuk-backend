@@ -1179,6 +1179,123 @@ router.post("/admin/generate-ids", protectAdmin, async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────
+// PATCH /api/users/fcm-token
+// Save the patient's device push token (Feature 2 — Appointment &
+// Medication Reminders). Called from the frontend once the patient
+// grants notification permission and Firebase hands back a token.
+// ─────────────────────────────────────────────
+router.patch("/fcm-token", protectUser, async (req, res) => {
+  try {
+    const { fcmToken } = req.body;
+    if (!fcmToken) {
+      return res.status(400).json({ success: false, message: "fcmToken is required." });
+    }
+    await User.findByIdAndUpdate(req.user._id, { fcmToken });
+    res.json({ success: true, message: "Push notifications enabled." });
+  } catch (error) {
+    console.error("Save FCM token error:", error);
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+});
+
+// ─────────────────────────────────────────────
+// GET /api/users/google-calendar/connect
+// Returns the Google OAuth consent URL for the patient to visit.
+// This is a SEPARATE OAuth client from the "Sign in with Google"
+// login flow above (GOOGLE_CLIENT_ID) — this one is
+// GOOGLE_CALENDAR_CLIENT_ID, scoped to Calendar access, not identity.
+//
+// `state` carries the user's ID as a short-lived signed JWT, since
+// Google's redirect back to our callback is a plain browser
+// navigation — it can't carry an Authorization header, so we can't
+// use protectUser on the callback route itself. Signing the state
+// prevents someone from forging a callback for a different user.
+// ─────────────────────────────────────────────
+router.get("/google-calendar/connect", protectUser, async (req, res) => {
+  try {
+    const state = jwt.sign({ userId: req.user._id.toString() }, process.env.JWT_SECRET, {
+      expiresIn: "10m",
+    });
+
+    const params = new URLSearchParams({
+      client_id: process.env.GOOGLE_CALENDAR_CLIENT_ID,
+      redirect_uri: process.env.GOOGLE_CALENDAR_REDIRECT_URI, // e.g. https://www.novabuk.com/api/users/google-calendar/callback
+      response_type: "code",
+      scope: "https://www.googleapis.com/auth/calendar.events",
+      access_type: "offline", // required to receive a refresh_token
+      prompt: "consent", // forces a refresh_token even on repeat connections
+      state,
+    });
+
+    const consentUrl = `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
+    res.json({ success: true, url: consentUrl });
+  } catch (error) {
+    console.error("Google Calendar connect error:", error);
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+});
+
+// ─────────────────────────────────────────────
+// GET /api/users/google-calendar/callback
+// Google redirects here after the patient approves/denies consent.
+// NOT behind protectUser — see note above. Identifies the user via
+// the signed `state` param instead.
+// ─────────────────────────────────────────────
+router.get("/google-calendar/callback", async (req, res) => {
+  const FRONTEND_SETTINGS_URL = `${process.env.FRONTEND_URL || "https://www.novabuk.com"}/app-setting.html?tab=notification`;
+
+  try {
+    const { code, state, error: googleError } = req.query;
+
+    if (googleError) {
+      // Patient clicked "Deny" on Google's consent screen
+      return res.redirect(`${FRONTEND_SETTINGS_URL}&calendar=denied`);
+    }
+
+    if (!code || !state) {
+      return res.redirect(`${FRONTEND_SETTINGS_URL}&calendar=error`);
+    }
+
+    let decoded;
+    try {
+      decoded = jwt.verify(state, process.env.JWT_SECRET);
+    } catch (err) {
+      return res.redirect(`${FRONTEND_SETTINGS_URL}&calendar=invalid_state`);
+    }
+
+    const { exchangeGoogleAuthCode } = require("../services/reminderService");
+    const { accessToken, refreshToken } = await exchangeGoogleAuthCode(code);
+
+    await User.findByIdAndUpdate(decoded.userId, {
+      "googleCalendar.accessToken": accessToken,
+      "googleCalendar.refreshToken": refreshToken,
+      "googleCalendar.connected": true,
+    });
+
+    return res.redirect(`${FRONTEND_SETTINGS_URL}&calendar=connected`);
+  } catch (error) {
+    console.error("Google Calendar callback error:", error);
+    return res.redirect(`${FRONTEND_SETTINGS_URL}&calendar=error`);
+  }
+});
+
+// ─────────────────────────────────────────────
+// DELETE /api/users/google-calendar/disconnect
+// ─────────────────────────────────────────────
+router.delete("/google-calendar/disconnect", protectUser, async (req, res) => {
+  try {
+    await User.findByIdAndUpdate(req.user._id, {
+      "googleCalendar.accessToken": null,
+      "googleCalendar.refreshToken": null,
+      "googleCalendar.connected": false,
+    });
+    res.json({ success: true, message: "Google Calendar disconnected." });
+  } catch (error) {
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+});
+
 module.exports = router;
 
 // ─────────────────────────────────────────────

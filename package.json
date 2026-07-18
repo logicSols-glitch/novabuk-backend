@@ -27,10 +27,12 @@
     "express-validator": "^7.0.0",
     "firebase-admin": "^14.2.0",
     "google-auth-library": "^10.6.2",
+    "googleapis": "^173.0.0",
     "jsonwebtoken": "^8.5.1",
     "mongodb": "^5.8.0",
     "mongoose": "^7.5.0",
     "multer": "^2.0.2",
+    "node-cron": "^4.6.0",
     "resend": "^3.5.0"
   },
   "devDependencies": {
