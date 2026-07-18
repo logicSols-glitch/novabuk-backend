@@ -47,11 +47,14 @@ const clinicSchema = new mongoose.Schema(
       type: String,
       default: "",
     },
-    // Subscription & Plans
+    // ── Subscription & Plans ─────────────────────────────
+    // Matches config/plans.js — that file is the single source of truth
+    // for pricing, seat limits, and allowed roles per plan. Add new plans
+    // there, not here — this enum just needs to accept the same keys.
     subscriptionPlan: {
       type: String,
-      enum: ["Free", "Pro", "Enterprise"],
-      default: "Free",
+      enum: ["Growth", "Pro", "Enterprise"],
+      default: "Growth",
     },
     subscriptionStatus: {
       type: String,
@@ -59,6 +62,14 @@ const clinicSchema = new mongoose.Schema(
       default: "Active",
     },
     subscriptionExpiry: { type: Date, default: null },
+    // 60-day free trial window from clinic creation, before any
+    // plan/billing enforcement kicks in. Not enforced anywhere yet —
+    // just tracked now so billing logic added later doesn't require
+    // another schema migration.
+    trialEndsAt: {
+      type: Date,
+      default: () => new Date(Date.now() + 60 * 24 * 60 * 60 * 1000),
+    },
   },
   { timestamps: true }
 );

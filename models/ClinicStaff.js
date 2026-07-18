@@ -2,13 +2,25 @@ const mongoose = require("mongoose");
 const bcrypt   = require("bcryptjs");
 
 /**
- * ClinicStaff — doctors, nurses, receptionists who use the clinic portal.
+ * ClinicStaff — doctors, nurses, receptionists, pharmacists, lab techs
+ * who use the clinic portal.
  *
- * Completely separate from the User model (patients).
- * A ClinicStaff account must be created by a system admin —
- * there is no self-registration for clinic staff.
+ * Completely separate from the User model (patients + the clinic OWNER,
+ * who is a User with role: "Doctors" — see clinics.js /register route).
+ * ClinicStaff records are only ever created BY that owner (or by a system
+ * admin) via /clinic-auth/my-staff or /clinic-auth/register-staff — there
+ * is no self-registration for clinic staff.
  *
  * Each staff member belongs to exactly ONE clinic.
+ *
+ * NOTE ON "admin" role: this is a DELEGATED admin the clinic owner can
+ * promote a staff member to (distinct from the owner's own implicit
+ * ownership via clinicId on their User doc). Delegated "admin" staff
+ * bypass the general requireRole() checks the same way the owner does
+ * (e.g. staff management, billing) — but NOT the stricter
+ * requireClinicalRole() checks (writing consultation notes, etc.),
+ * which only the owner (a doctor by construction) and actual
+ * doctor/nurse roles pass. See middleware/requireRole.js.
  */
 const clinicStaffSchema = new mongoose.Schema(
   {
@@ -41,10 +53,12 @@ const clinicStaffSchema = new mongoose.Schema(
       select:    false, // never returned by default — must explicitly .select("+password")
     },
 
-    // What they can do in the clinic portal
+    // What they can do in the clinic portal.
+    // pharmacist/lab_tech are Pro-tier-only roles — see checkSeatLimit,
+    // which rejects creating these roles on a Growth-plan clinic.
     role: {
       type:    String,
-      enum:    ["doctor", "nurse", "receptionist", "admin"],
+      enum:    ["doctor", "nurse", "receptionist", "pharmacist", "lab_tech", "admin"],
       default: "doctor",
     },
 
@@ -54,6 +68,13 @@ const clinicStaffSchema = new mongoose.Schema(
     },
     passwordResetToken:   { type: String, default: null },
     passwordResetExpires: { type: Date,   default: null },
+
+    // Set on every successful login (see clinic-auth.js /login route).
+    // Powers the optional "Last active" column in the staff table —
+    // real data (when they last actually logged in), not a fake live
+    // "online now" indicator, which would need session/heartbeat
+    // infrastructure that doesn't exist.
+    lastLoginAt: { type: Date, default: null },
   },
   { timestamps: true }
 );

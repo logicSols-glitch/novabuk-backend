@@ -7,7 +7,8 @@ const { sendPasswordResetEmail } = require("../services/emailService");
 const Clinic      = require("../models/Clinic");
 const { protectClinic }  = require("../middleware/authClinic");
 const { protectAdmin }   = require("../middleware/auth");
-const { protectDoctor }  = require("../middleware/authDoctor");
+const { protectClinicPortal } = require("../middleware/protectClinicPortal");
+const { requireRole } = require("../middleware/requireRole");
 
 // Helper — generate JWT
 const generateToken = (id) =>
@@ -69,6 +70,10 @@ router.post("/login", async (req, res) => {
         message: "This account has been deactivated. Contact your clinic admin.",
       });
     }
+
+    // Powers the "Last active" column in the staff table (clinic-settings.html)
+    staff.lastLoginAt = new Date();
+    await staff.save({ validateBeforeSave: false });
 
     const token = generateToken(staff._id);
 
@@ -311,16 +316,16 @@ router.post("/reset-password/:token", async (req, res) => {
 // GET /api/clinic-auth/my-staff
 // Protected (Clinic Doctor) — list all staff in doctor's clinic
 // ─────────────────────────────────────────────────────────────
-router.get("/my-staff", protectDoctor, async (req, res) => {
+router.get("/my-staff", protectClinicPortal, requireRole(), async (req, res) => {
   try {
-    if (!req.user.clinicId) {
+    if (!req.actor.clinicId) {
       return res.status(400).json({
         success: false,
         message: "No clinic linked to your account.",
       });
     }
 
-    const staff = await ClinicStaff.find({ clinic: req.user.clinicId })
+    const staff = await ClinicStaff.find({ clinic: req.actor.clinicId })
       .sort({ createdAt: -1 })
       .select("-password");
 
@@ -339,28 +344,20 @@ router.get("/my-staff", protectDoctor, async (req, res) => {
 // POST /api/clinic-auth/my-staff
 // Protected (Clinic Doctor) — create staff for doctor's clinic (Requires Pro subscription)
 // ─────────────────────────────────────────────────────────────
-router.post("/my-staff", protectDoctor, async (req, res) => {
+router.post("/my-staff", protectClinicPortal, requireRole(), async (req, res) => {
   try {
-    if (!req.user.clinicId) {
+    if (!req.actor.clinicId) {
       return res.status(400).json({
         success: false,
         message: "No clinic linked to your account.",
       });
     }
 
-    // Verify clinic's subscription plan is Pro
-    const clinic = await Clinic.findById(req.user.clinicId);
+    const clinic = await Clinic.findById(req.actor.clinicId);
     if (!clinic) {
       return res.status(404).json({
         success: false,
         message: "Clinic not found.",
-      });
-    }
-
-    if (clinic.subscriptionPlan !== "Pro") {
-      return res.status(403).json({
-        success: false,
-        message: "Multiple staff and screen terminals are premium features. Please upgrade your clinic subscription to Premium Pro to use this.",
       });
     }
 
@@ -370,6 +367,18 @@ router.post("/my-staff", protectDoctor, async (req, res) => {
       return res.status(400).json({
         success: false,
         message: "fullName, email and password are required.",
+      });
+    }
+
+    // Growth plan: capped at clinic.seatLimits.doctor doctors and
+    // clinic.seatLimits.receptionist receptionists — no pharmacist/lab_tech/
+    // extra nurse seats at all. Pro/Enterprise: no cap enforced here.
+    const { checkSeatLimit } = require("../middleware/requireRole");
+    const seatCheck = await checkSeatLimit(clinic, role || "nurse");
+    if (!seatCheck.allowed) {
+      return res.status(403).json({
+        success: false,
+        message: seatCheck.message,
       });
     }
 
@@ -383,7 +392,7 @@ router.post("/my-staff", protectDoctor, async (req, res) => {
     }
 
     const newStaff = await ClinicStaff.create({
-      clinic: req.user.clinicId,
+      clinic: req.actor.clinicId,
       fullName,
       email: email.toLowerCase(),
       password,
@@ -410,9 +419,9 @@ router.post("/my-staff", protectDoctor, async (req, res) => {
 // DELETE /api/clinic-auth/my-staff/:id
 // Protected (Clinic Doctor) — remove staff from doctor's clinic
 // ─────────────────────────────────────────────────────────────
-router.delete("/my-staff/:id", protectDoctor, async (req, res) => {
+router.delete("/my-staff/:id", protectClinicPortal, requireRole(), async (req, res) => {
   try {
-    if (!req.user.clinicId) {
+    if (!req.actor.clinicId) {
       return res.status(400).json({
         success: false,
         message: "No clinic linked to your account.",
@@ -427,8 +436,8 @@ router.delete("/my-staff/:id", protectDoctor, async (req, res) => {
       });
     }
 
-    // Verify staff member belongs to the doctor's clinic
-    if (staff.clinic.toString() !== req.user.clinicId.toString()) {
+    // Verify staff member belongs to the same clinic
+    if (staff.clinic.toString() !== req.actor.clinicId.toString()) {
       return res.status(403).json({
         success: false,
         message: "Access denied. You can only delete staff members belonging to your clinic.",
@@ -443,6 +452,76 @@ router.delete("/my-staff/:id", protectDoctor, async (req, res) => {
     });
   } catch (error) {
     console.error("Delete staff error:", error);
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+});
+
+// ─────────────────────────────────────────────
+// PATCH /api/clinic-auth/my-staff/:id
+// Edit an existing staff member's role (or active status).
+// Same access as add/remove: owner or delegated ClinicStaff "admin" only.
+// ─────────────────────────────────────────────
+router.patch("/my-staff/:id", protectClinicPortal, requireRole(), async (req, res) => {
+  try {
+    if (!req.actor.clinicId) {
+      return res.status(400).json({
+        success: false,
+        message: "No clinic linked to your account.",
+      });
+    }
+
+    const staff = await ClinicStaff.findById(req.params.id);
+    if (!staff) {
+      return res.status(404).json({
+        success: false,
+        message: "Staff member not found.",
+      });
+    }
+
+    if (staff.clinic.toString() !== req.actor.clinicId.toString()) {
+      return res.status(403).json({
+        success: false,
+        message: "Access denied. You can only edit staff members belonging to your clinic.",
+      });
+    }
+
+    const { role, isActive } = req.body;
+
+    // If the role is actually changing, re-run the same seat-limit check
+    // used at creation — e.g. don't let someone get promoted to "doctor"
+    // on a Growth plan that's already at its 2-doctor cap.
+    if (role && role !== staff.role) {
+      const clinic = await Clinic.findById(req.actor.clinicId);
+      const { checkSeatLimit } = require("../middleware/requireRole");
+      const seatCheck = await checkSeatLimit(clinic, role);
+      if (!seatCheck.allowed) {
+        return res.status(403).json({
+          success: false,
+          message: seatCheck.message,
+        });
+      }
+      staff.role = role;
+    }
+
+    if (typeof isActive === "boolean") {
+      staff.isActive = isActive;
+    }
+
+    await staff.save();
+
+    res.json({
+      success: true,
+      message: "Staff member updated successfully.",
+      data: {
+        id: staff._id,
+        fullName: staff.fullName,
+        email: staff.email,
+        role: staff.role,
+        isActive: staff.isActive,
+      },
+    });
+  } catch (error) {
+    console.error("Update staff error:", error);
     res.status(500).json({ success: false, message: "Server error." });
   }
 });

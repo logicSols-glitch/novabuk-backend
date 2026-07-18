@@ -3,6 +3,8 @@ const router = express.Router();
 const Clinic = require("../models/Clinic");
 const { protectUser } = require("../middleware/authUser");
 const { protectDoctor } = require("../middleware/authDoctor.js");
+const { protectClinicPortal } = require("../middleware/protectClinicPortal");
+const { requireRole } = require("../middleware/requireRole");
 const { protectAdmin } = require("../middleware/auth");
 const User = require("../models/User");
 const Visit = require("../models/Visit");
@@ -59,7 +61,7 @@ router.get("/", async (req, res) => {
 // Called from clinic-register.html after doctor signs up.
 router.post("/register", protectDoctor, async (req, res) => {
   try {
-    const { name, address, city, state, phone, email, services } = req.body;
+    const { name, address, city, state, phone, email, services, plan } = req.body;
 
     if (!name || !address || !city || !phone) {
       return res.status(400).json({
@@ -76,6 +78,15 @@ router.post("/register", protectDoctor, async (req, res) => {
       });
     }
 
+    // Plan is chosen at registration. Validated against config/plans.js —
+    // the single source of truth for what plans exist. Defaults to
+    // "Growth" if omitted or invalid, rather than rejecting the request,
+    // since plan choice is a soft preference at signup, not a hard
+    // requirement. No billing enforced yet; trialEndsAt is set
+    // automatically (60 days) regardless of plan chosen.
+    const { isValidPlan } = require("../config/plans");
+    const chosenPlan = isValidPlan(plan) ? plan : "Growth";
+
     const clinic = await Clinic.create({
       name: name.trim(),
       location: {
@@ -88,6 +99,8 @@ router.post("/register", protectDoctor, async (req, res) => {
       services: Array.isArray(services) ? services : [],
       isOpen: true,
       isActive: true,
+      subscriptionPlan: chosenPlan,
+      // trialEndsAt uses the schema default (60 days from now) automatically
     });
 
     const updatedUser = await User.findByIdAndUpdate(
@@ -108,7 +121,12 @@ router.post("/register", protectDoctor, async (req, res) => {
     res.status(201).json({
       success: true,
       message: "Clinic registered successfully.",
-      clinic: { id: clinic._id, name: clinic.name },
+      clinic: {
+        id: clinic._id,
+        name: clinic.name,
+        subscriptionPlan: clinic.subscriptionPlan,
+        trialEndsAt: clinic.trialEndsAt,
+      },
       user: {
         id: updatedUser._id,
         fullName: updatedUser.fullName,
@@ -127,15 +145,15 @@ router.post("/register", protectDoctor, async (req, res) => {
 });
 
 // GET /api/clinics/my — doctor fetches their own clinic
-router.get("/my", protectDoctor, async (req, res) => {
+router.get("/my", protectClinicPortal, async (req, res) => {
   try {
-    if (!req.user.clinicId) {
+    if (!req.actor.clinicId) {
       return res.status(400).json({
         success: false,
         message: "No clinic linked to your account.",
       });
     }
-    const clinic = await Clinic.findById(req.user.clinicId);
+    const clinic = await Clinic.findById(req.actor.clinicId);
     if (!clinic) {
       return res
         .status(404)
@@ -147,10 +165,13 @@ router.get("/my", protectDoctor, async (req, res) => {
   }
 });
 
-// PATCH /api/clinics/my — doctor updates their own clinic
-router.patch("/my", protectDoctor, async (req, res) => {
+// PATCH /api/clinics/my — update clinic settings.
+// Owner or delegated ClinicStaff "admin" only — per Feature 1's matrix,
+// "Clinic settings" is a Clinic Admin duty, not something every staff
+// member (doctor/nurse/receptionist/etc.) should be able to change.
+router.patch("/my", protectClinicPortal, requireRole(), async (req, res) => {
   try {
-    if (!req.user.clinicId) {
+    if (!req.actor.clinicId) {
       return res.status(400).json({
         success: false,
         message: "No clinic linked to your account.",
@@ -162,7 +183,7 @@ router.patch("/my", protectDoctor, async (req, res) => {
 
     // ── CONFLICT GUARD ─────────────────────────────────────────
     if (baseVersion) {
-        const existingClinic = await Clinic.findById(req.user.clinicId);
+        const existingClinic = await Clinic.findById(req.actor.clinicId);
         if (existingClinic && existingClinic.updatedAt) {
             const clientTime = new Date(baseVersion).getTime();
             const serverTime = new Date(existingClinic.updatedAt).getTime();
@@ -189,7 +210,7 @@ router.patch("/my", protectDoctor, async (req, res) => {
     if (openingHours !== undefined) updates.openingHours = openingHours;
 
 
-    const clinic = await Clinic.findByIdAndUpdate(req.user.clinicId, updates, {
+    const clinic = await Clinic.findByIdAndUpdate(req.actor.clinicId, updates, {
       new: true,
       runValidators: true,
     });
@@ -500,16 +521,16 @@ router.get("/admin/:id/stats", protectAdmin, async (req, res) => {
 // POST /api/clinics/upgrade
 // Doctor/Clinic Admin — upgrade subscription plan
 // ─────────────────────────────────────────────
-router.post("/upgrade", protectDoctor, async (req, res) => {
+router.post("/upgrade", protectClinicPortal, requireRole(), async (req, res) => {
   try {
-    if (!req.user.clinicId) {
+    if (!req.actor.clinicId) {
       return res.status(400).json({
         success: false,
         message: "No clinic linked to your account.",
       });
     }
 
-    const { reference, plan = "Pro" } = req.body;
+    const { reference, plan = "Pro", provider = "customProvider" } = req.body;
 
     if (!reference) {
       return res.status(400).json({
@@ -518,12 +539,45 @@ router.post("/upgrade", protectDoctor, async (req, res) => {
       });
     }
 
+    const { isValidPlan, getPlan } = require("../config/plans");
+    if (!isValidPlan(plan)) {
+      return res.status(400).json({
+        success: false,
+        message: `"${plan}" is not a valid plan.`,
+      });
+    }
+
+    // ── VERIFY THE PAYMENT — do not trust the client-supplied reference ──
+    // Previously this route activated the plan on ANY reference string
+    // with no verification at all. That's a free-upgrade exploit — anyone
+    // logged in as a doctor could POST a fake reference and get Pro free.
+    const { verifyPayment } = require("../services/paymentProviders");
+    const verification = await verifyPayment(provider, reference);
+
+    if (!verification.success) {
+      return res.status(402).json({
+        success: false,
+        message: verification.error || "Payment could not be verified.",
+      });
+    }
+
+    // Sanity-check the amount paid matches what the plan actually costs.
+    // Prevents someone paying for a cheaper plan then sending that
+    // reference with plan="Pro" in the request body.
+    const planConfig = getPlan(plan);
+    if (planConfig?.priceMonthly && verification.amount < planConfig.priceMonthly) {
+      return res.status(402).json({
+        success: false,
+        message: `Amount paid (₦${verification.amount}) does not match the ${planConfig.displayName} plan price (₦${planConfig.priceMonthly}).`,
+      });
+    }
+
     // Update the clinic's plan, status, and set expiry to 30 days from now
     const expiryDate = new Date();
     expiryDate.setDate(expiryDate.getDate() + 30);
 
     const clinic = await Clinic.findByIdAndUpdate(
-      req.user.clinicId,
+      req.actor.clinicId,
       {
         subscriptionPlan: plan,
         subscriptionStatus: "Active",

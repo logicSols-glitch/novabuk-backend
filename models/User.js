@@ -87,6 +87,30 @@ const userSchema = new mongoose.Schema(
       emailNotifications: { type: Boolean, default: true },
     },
 
+    // ── FEATURE 2: APPOINTMENT & MEDICATION REMINDERS ─────
+    // fcmToken: the device's Firebase Cloud Messaging push token.
+    // Set by the frontend once the patient grants notification
+    // permission (not built yet — needs a Firebase project first,
+    // see services/reminderService.js).
+    fcmToken: { type: String, default: null },
+
+    // lastActiveAt: stamped whenever the patient actually opens/uses
+    // the app (update this in protectUser middleware or a lightweight
+    // "ping" route — not wired in yet). Powers the Feature 2 rule:
+    // "only fall back to SMS/WhatsApp if the patient hasn't opened
+    // the app in 48 hours."
+    lastActiveAt: { type: Date, default: null },
+
+    // Google Calendar OAuth tokens — set once the patient completes
+    // the one-time calendar-connect consent flow (not built yet, see
+    // reminderService.js). refreshToken lets the server request a new
+    // accessToken without the patient re-consenting every time.
+    googleCalendar: {
+      accessToken: { type: String, default: null },
+      refreshToken: { type: String, default: null },
+      connected: { type: Boolean, default: false },
+    },
+
     // ── ROLE ─────────────────────────────────────────────
     role: {
       type: String,

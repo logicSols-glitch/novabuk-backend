@@ -4,11 +4,43 @@ const Visit = require("../models/Visit");
 const User = require("../models/User");
 const Clinic = require("../models/Clinic");
 const Notification = require("../models/notification");
-const { protectDoctor } = require("../middleware/authDoctor.js");
+const Appointment = require("../models/Appointment");
+const MedicationReminder = require("../models/MedicationReminder");
+const { sendPushNotification, createCalendarEvent } = require("../services/reminderService");
+const { protectClinicPortal } = require("../middleware/protectClinicPortal");
+const { requireRole, requireClinicalRole } = require("../middleware/requireRole");
 const { sendVisitConfirmationEmail, sendWalkInWelcomeEmail } = require("../services/emailService");
 
-// All clinic routes require a logged-in Doctor
-router.use(protectDoctor);
+// All clinic routes require EITHER the clinic owner (Bearer token) OR
+// a logged-in ClinicStaff member (cookie) — see protectClinicPortal for why
+// this replaced the old owner-only protectDoctor gate.
+router.use(protectClinicPortal);
+
+// ── STRIP CLINICAL FIELDS FOR NON-CLINICAL ROLES ─────────────
+// Per Feature 1 spec: consultation notes, diagnosis, prescriptions must
+// NEVER appear in the API response to receptionist/lab_tech/pharmacist —
+// not just hidden in the UI. Doctor, nurse, and the owner (a doctor by
+// construction) see everything; every other role gets these fields
+// stripped at the response level, before res.json() ever sends them.
+const CLINICAL_FIELDS = ["diagnosis", "prescription", "testsOrdered", "advice", "clinicNotes"];
+
+function canSeeClinicalFields(actor) {
+  return actor.isOwner || actor.role === "doctor" || actor.role === "nurse";
+}
+
+function sanitizeVisit(visitDoc, actor) {
+  if (canSeeClinicalFields(actor)) return visitDoc;
+  const plain = visitDoc.toObject ? visitDoc.toObject() : { ...visitDoc };
+  CLINICAL_FIELDS.forEach((field) => {
+    delete plain[field];
+  });
+  return plain;
+}
+
+function sanitizeVisits(visitDocs, actor) {
+  if (canSeeClinicalFields(actor)) return visitDocs;
+  return visitDocs.map((v) => sanitizeVisit(v, actor));
+}
 
 // ─────────────────────────────────────────────────────────────
 // GET /api/clinic/queue
@@ -89,7 +121,7 @@ router.get("/queue", async (req, res) => {
 
     res.json({
       success: true,
-      data: visits,
+      data: sanitizeVisits(visits, req.actor),
       statusCounts,
       clinic: { id: clinic._id, name: clinic.name },
     });
@@ -175,7 +207,18 @@ router.get("/visits/:id", async (req, res) => {
       .limit(3)
       .select("diagnosis notes completedAt preferredDate");
 
-    res.json({ success: true, data: visit, pastVisits });
+    // pastVisits selects diagnosis/notes for clinical review — also
+    // needs stripping for non-clinical roles viewing this visit
+    const sanitizedPastVisits = canSeeClinicalFields(req.actor)
+      ? pastVisits
+      : pastVisits.map((v) => {
+          const plain = v.toObject();
+          delete plain.diagnosis;
+          delete plain.notes;
+          return plain;
+        });
+
+    res.json({ success: true, data: sanitizeVisit(visit, req.actor), pastVisits: sanitizedPastVisits });
   } catch (error) {
     console.error("Get visit error:", error);
     res.status(500).json({ success: false, message: "Server error." });
@@ -186,7 +229,7 @@ router.get("/visits/:id", async (req, res) => {
 // PATCH /api/clinic/visits/:id/confirm
 // Accept/Confirm a pending visit.
 // ─────────────────────────────────────────────────────────────
-router.patch("/visits/:id/confirm", async (req, res) => {
+router.patch("/visits/:id/confirm", requireRole("doctor", "nurse", "receptionist"), async (req, res) => {
   try {
     const visit = await Visit.findById(req.params.id)
       .populate("user", "email fullName notificationSettings")
@@ -231,7 +274,7 @@ router.patch("/visits/:id/confirm", async (req, res) => {
       }
     }
 
-    res.json({ success: true, message: "Visit confirmed.", data: visit });
+    res.json({ success: true, message: "Visit confirmed.", data: sanitizeVisit(visit, req.actor) });
   } catch (error) {
     console.error("Confirm visit error:", error);
     res.status(500).json({ success: false, message: "Server error." });
@@ -242,7 +285,7 @@ router.patch("/visits/:id/confirm", async (req, res) => {
 // PATCH /api/clinic/visits/:id/start
 // Mark visit as InProgress. Records who started it.
 // ─────────────────────────────────────────────────────────────
-router.patch("/visits/:id/start", async (req, res) => {
+router.patch("/visits/:id/start", requireRole("doctor", "nurse"), async (req, res) => {
   try {
     const visit = await Visit.findById(req.params.id);
 
@@ -290,7 +333,7 @@ router.patch("/visits/:id/start", async (req, res) => {
 // PATCH /api/clinic/visits/:id/notes
 // Auto-save — called every ~1.5s as doctor types.
 // ─────────────────────────────────────────────────────────────
-router.patch("/visits/:id/notes", async (req, res) => {
+router.patch("/visits/:id/notes", requireClinicalRole("nurse"), async (req, res) => {
   try {
     const { diagnosis, prescription, testsOrdered, advice, clinicNotes } =
       req.body;
@@ -326,13 +369,13 @@ router.patch("/visits/:id/notes", async (req, res) => {
 // PATCH /api/clinic/visits/:id/complete
 // Finalise the consultation and notify the patient.
 // ─────────────────────────────────────────────────────────────
-router.patch("/visits/:id/complete", async (req, res) => {
+router.patch("/visits/:id/complete", requireRole("doctor", "nurse"), async (req, res) => {
   try {
-    const { diagnosis, prescription, testsOrdered, advice, clinicNotes } =
+    const { diagnosis, prescription, testsOrdered, advice, clinicNotes, nextAppointment, medications } =
       req.body;
 
     const visit = await Visit.findById(req.params.id)
-      .populate("user", "fullName email notificationSettings novaBukId")
+      .populate("user", "fullName email notificationSettings novaBukId fcmToken lastActiveAt")
       .populate("clinic", "name");
 
     if (!visit) {
@@ -356,6 +399,87 @@ router.patch("/visits/:id/complete", async (req, res) => {
     if (clinicNotes !== undefined) visit.clinicNotes = clinicNotes;
 
     await visit.save();
+
+    // ── FEATURE 2: NEXT APPOINTMENT ─────────────────────────
+    // doctorType tells us which collection req.actor.id belongs to —
+    // "doctor" here can be either the clinic owner (User) or an added
+    // ClinicStaff doctor. See Appointment.js for why this matters.
+    let createdAppointment = null;
+    if (nextAppointment) {
+      const scheduledAt = new Date(nextAppointment);
+      if (isNaN(scheduledAt.getTime())) {
+        return res.status(400).json({
+          success: false,
+          message: "nextAppointment must be a valid date.",
+        });
+      }
+      if (scheduledAt < new Date()) {
+        return res.status(400).json({
+          success: false,
+          message: "Next appointment cannot be in the past.",
+        });
+      }
+
+      createdAppointment = await Appointment.create({
+        clinic: visit.clinic._id,
+        patient: visit.user._id,
+        doctorId: req.actor.id,
+        doctorType: req.actor.isOwner ? "User" : "ClinicStaff",
+        visit: visit._id,
+        scheduledAt,
+      });
+
+      // Fire the (currently stubbed) notification channels — safe to
+      // call now, each degrades to a no-op + log until its real
+      // credentials exist. See services/reminderService.js.
+      sendPushNotification({
+        userId: visit.user._id,
+        fcmToken: visit.user.fcmToken,
+        title: "Upcoming Appointment",
+        body: `Your next appointment at ${visit.clinic.name} is on ${scheduledAt.toLocaleDateString()}.`,
+        data: { appointmentId: createdAppointment._id.toString() },
+      }).catch((err) => console.error("Appointment push failed:", err.message));
+
+      createCalendarEvent({
+        userId: visit.user._id,
+        googleAccessToken: null, // not implemented yet — see reminderService.js
+        title: `NovaBuk Appointment — ${visit.clinic.name}`,
+        description: `Follow-up appointment at ${visit.clinic.name}.`,
+        startTime: scheduledAt.toISOString(),
+        endTime: new Date(scheduledAt.getTime() + 30 * 60000).toISOString(), // default 30min slot
+      }).catch((err) => console.error("Calendar event creation failed:", err.message));
+    }
+
+    // ── FEATURE 2: MEDICATION REMINDERS ─────────────────────
+    // medications: array of { drugName, dosage, frequencyPerDay, durationDays, startDate }
+    // Separate from the free-text `prescription` field above — this is
+    // structured data specifically for the reminder scheduler (built
+    // once FCM is ready) to query against.
+    let createdReminders = [];
+    if (Array.isArray(medications) && medications.length > 0) {
+      for (const med of medications) {
+        if (!med.drugName || !med.dosage || !med.frequencyPerDay || !med.durationDays) {
+          continue; // skip incomplete entries rather than failing the whole visit completion
+        }
+        const startDate = med.startDate ? new Date(med.startDate) : new Date();
+        const endDate = new Date(startDate);
+        endDate.setDate(endDate.getDate() + Number(med.durationDays));
+
+        const reminder = await MedicationReminder.create({
+          appointment: createdAppointment ? createdAppointment._id : null,
+          visit: visit._id,
+          patient: visit.user._id,
+          clinic: visit.clinic._id,
+          drugName: med.drugName,
+          dosage: med.dosage,
+          frequencyPerDay: med.frequencyPerDay,
+          durationDays: med.durationDays,
+          startDate,
+          endDate,
+        });
+        createdReminders.push(reminder);
+      }
+    }
 
     // Notify patient — fire and forget
     Notification.create({
@@ -396,6 +520,8 @@ router.patch("/visits/:id/complete", async (req, res) => {
       success: true,
       message: "Consultation completed.",
       data: visit,
+      appointment: createdAppointment,
+      medicationReminders: createdReminders,
     });
   } catch (error) {
     console.error("Complete visit error:", error);
@@ -470,7 +596,7 @@ router.get("/patients/search", async (req, res) => {
 // Add a walk-in patient to today's queue.
 // Body: { userId, clinicId, notes? }
 // ─────────────────────────────────────────────────────────────
-router.post("/walk-in", async (req, res) => {
+router.post("/walk-in", requireRole("doctor", "nurse", "receptionist"), async (req, res) => {
   try {
     const { userId, clinicId, notes } = req.body;
 
@@ -584,7 +710,7 @@ router.get("/patients/:id", async (req, res) => {
 // GET /api/clinic/patients/:id/history
 // Get all past visits of a patient in a specific clinic.
 // ─────────────────────────────────────────────────────────────
-router.get("/patients/:id/history", async (req, res) => {
+router.get("/patients/:id/history", requireRole("doctor", "nurse"), async (req, res) => {
   try {
     const { clinicId } = req.query;
     if (!clinicId) {
@@ -607,7 +733,7 @@ router.get("/patients/:id/history", async (req, res) => {
 // Register a NEW patient AND add them to today's queue.
 // Body: { fullName, email, phone, gender, age, clinicId, notes? }
 // ─────────────────────────────────────────────────────────────
-router.post("/walk-in-new", async (req, res) => {
+router.post("/walk-in-new", requireRole("doctor", "nurse", "receptionist"), async (req, res) => {
   try {
     const { fullName, email, phone, gender, age, clinicId, notes } = req.body;
 
@@ -723,7 +849,7 @@ router.post("/walk-in-new", async (req, res) => {
 // ─────────────────────────────────────────────────────────────
 router.get("/notifications", async (req, res) => {
   try {
-    const clinicId = req.user.clinicId;
+    const clinicId = req.actor.clinicId;
 
     if (!clinicId) {
       return res.status(400).json({
@@ -753,7 +879,7 @@ router.get("/notifications", async (req, res) => {
 // ─────────────────────────────────────────────────────────────
 router.get("/notifications/unread-count", async (req, res) => {
   try {
-    const clinicId = req.user.clinicId;
+    const clinicId = req.actor.clinicId;
     if (!clinicId) return res.json({ success: true, count: 0 });
 
     const count = await Notification.countDocuments({ clinic: clinicId, read: false });
@@ -771,7 +897,7 @@ router.get("/notifications/unread-count", async (req, res) => {
 // ─────────────────────────────────────────────────────────────
 router.patch("/notifications/mark-all-read", async (req, res) => {
   try {
-    const clinicId = req.user.clinicId;
+    const clinicId = req.actor.clinicId;
     if (!clinicId) return res.json({ success: true });
 
     await Notification.updateMany({ clinic: clinicId, read: false }, { read: true });
@@ -787,7 +913,7 @@ router.patch("/notifications/mark-all-read", async (req, res) => {
 // ─────────────────────────────────────────────────────────────
 router.patch("/notifications/:id/read", async (req, res) => {
   try {
-    const clinicId = req.user.clinicId;
+    const clinicId = req.actor.clinicId;
     await Notification.findOneAndUpdate(
       { _id: req.params.id, clinic: clinicId },
       { read: true }
