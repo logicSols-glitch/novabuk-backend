@@ -33,6 +33,7 @@
     "mongoose": "^7.5.0",
     "multer": "^2.0.2",
     "node-cron": "^4.6.0",
+    "pdfkit": "^0.19.1",
     "resend": "^3.5.0"
   },
   "devDependencies": {

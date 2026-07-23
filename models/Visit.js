@@ -23,6 +23,15 @@ const visitSchema = new mongoose.Schema(
       default: "Pending",
       index: true,
     },
+    // ── BILLING (Point of Care Billing module) ────────────
+    // Determines which fee applies from ClinicFeeSchedule when the
+    // bill auto-generates on consultation completion. Defaults to
+    // "General" if the doctor never sets it explicitly.
+    visitType: {
+      type: String,
+      enum: ["General", "Specialist", "Follow-up", "Emergency"],
+      default: "General",
+    },
     preferredDate:  { type: Date,   default: null },
     notes:          { type: String, default: "" },
     healthProfileSnapshot: {

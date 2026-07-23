@@ -61,7 +61,7 @@ if (process.env.NODE_ENV !== "test") {
 const { startReminderScheduler } = require("./services/reminderScheduler");
 
 
-// ── ROUTES — existing ────────────────────────────────────
+// ── ROUTES — blogs ────────────────────────────────────
 app.use("/api/blogs",   require("./routes/blogs"));
 app.use("/api/tips",    require("./routes/tips"));
 app.use("/api/admin",   require("./routes/admin"));
@@ -80,6 +80,7 @@ app.use("/api/contact",   require("./routes/contact"));   // contact form
 // ── ROUTES — clinic portal ───────────────────────────────
 app.use("/api/clinic", require("./routes/clinic-visits"));
 app.use("/api/clinic-auth", require("./routes/clinic-auth"));
+app.use("/api/clinic", require("./routes/clinic-billing"));
 
 // ── HEALTH CHECK ──────────────────────────────────────────
 app.get("/api/health", (req, res) => {

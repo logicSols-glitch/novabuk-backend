@@ -308,6 +308,75 @@ router.patch("/:id/cancel", async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────
+// GET /api/visits/bills/my
+// Patient's own bills across all their visits, most recent first.
+// ─────────────────────────────────────────────
+router.get("/bills/my", async (req, res) => {
+  try {
+    const PatientBill = require("../models/PatientBill");
+    const bills = await PatientBill.find({ patient: req.user._id })
+      .populate("clinic", "name location")
+      .populate("visit", "visitType status")
+      .sort({ createdAt: -1 });
+
+    res.json({ success: true, data: bills });
+  } catch (error) {
+    console.error("Get patient bills error:", error);
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+});
+
+// ─────────────────────────────────────────────
+// GET /api/visits/:id/bill
+// A patient viewing the bill for one specific visit of their own.
+// ─────────────────────────────────────────────
+router.get("/:id/bill", async (req, res) => {
+  try {
+    const PatientBill = require("../models/PatientBill");
+    const bill = await PatientBill.findOne({ visit: req.params.id, patient: req.user._id })
+      .populate("clinic", "name location");
+
+    if (!bill) {
+      return res.status(404).json({ success: false, message: "No bill found for this visit." });
+    }
+    res.json({ success: true, data: bill });
+  } catch (error) {
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+});
+
+// ─────────────────────────────────────────────
+// GET /api/visits/bills/:billId/receipt
+// Patient downloads their own paid receipt as a PDF.
+// ─────────────────────────────────────────────
+router.get("/bills/:billId/receipt", async (req, res) => {
+  try {
+    const PatientBill = require("../models/PatientBill");
+    const { generateReceiptPDFBuffer } = require("../services/billingService");
+
+    const bill = await PatientBill.findOne({ _id: req.params.billId, patient: req.user._id }).populate(
+      "clinic",
+      "name location"
+    );
+
+    if (!bill) {
+      return res.status(404).json({ success: false, message: "Bill not found." });
+    }
+    if (!bill.receiptNumber) {
+      return res.status(400).json({ success: false, message: "This bill hasn't been paid yet." });
+    }
+
+    const pdfBuffer = await generateReceiptPDFBuffer(bill, bill.clinic, req.user);
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="${bill.receiptNumber}.pdf"`);
+    res.send(pdfBuffer);
+  } catch (error) {
+    console.error("Patient receipt download error:", error);
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+});
+
 module.exports = router;
 
 // ─────────────────────────────────────────────

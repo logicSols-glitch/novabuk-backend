@@ -1,18 +1,6 @@
 const mongoose = require("mongoose");
 
-/**
- * Appointment — created when a doctor sets a "next appointment" date
- * while closing a consultation (see clinic-visits.js /visits/:id/complete).
- *
- * NOTE ON doctor/doctorType: our system has TWO possible "doctor"
- * identities — the clinic OWNER (a User with role: "Doctors") or an
- * added ClinicStaff doctor. Rather than a fixed `ref`, doctorType tells
- * you which collection to populate from. Same pattern should be used
- * anywhere else in the codebase that needs to reference "whichever
- * doctor did this" (Visit.handledBy currently only refs "User" and
- * would silently fail to populate for a ClinicStaff doctor — a
- * pre-existing gap, separate from this feature, worth fixing later).
- */
+
 const appointmentSchema = new mongoose.Schema(
   {
     clinic: {

@@ -199,10 +199,47 @@ async function sendWhatsappReminder({ userId, whatsappNumber, message }) {
   }
 }
 
+/**
+ * Sends an actual document (e.g. a PDF receipt) via WhatsApp, using
+ * Termii's `media` parameter — verified against their real API docs
+ * (developers.termii.com/messaging-api), which support a
+ * `media: { url, caption }` object alongside channel: "whatsapp".
+ * mediaUrl must be a publicly accessible URL (e.g. a Cloudinary link)
+ * — Termii fetches the file from that URL, it isn't uploaded directly.
+ */
+async function sendWhatsAppDocument({ userId, whatsappNumber, caption, mediaUrl }) {
+  if (!process.env.TERMII_API_KEY) {
+    console.log(`[reminderService] Termii not configured. Would have sent document to ${whatsappNumber}: ${mediaUrl}`);
+    return { success: false, skipped: true, reason: "Termii not configured" };
+  }
+
+  try {
+    const res = await fetch("https://api.ng.termii.com/api/sms/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        api_key: process.env.TERMII_API_KEY,
+        to: whatsappNumber,
+        from: process.env.TERMII_SENDER_ID || "NovaBuk",
+        sms: caption, // required field even when sending media, per Termii's docs
+        type: "plain",
+        channel: "whatsapp",
+        media: { url: mediaUrl, caption },
+      }),
+    });
+    const data = await res.json();
+    return { success: data.code === "ok", raw: data };
+  } catch (err) {
+    console.error("[reminderService] Termii WhatsApp document send failed:", err.message);
+    return { success: false, error: err.message };
+  }
+}
+
 module.exports = {
   sendPushNotification,
   createCalendarEvent,
   exchangeGoogleAuthCode,
   sendSmsReminder,
   sendWhatsappReminder,
+  sendWhatsAppDocument,
 };

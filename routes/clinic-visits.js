@@ -108,6 +108,32 @@ router.get("/queue", async (req, res) => {
       .populate("user", "fullName phone email healthProfile avatarUrl novaBukId")
       .populate("symptomLog", "tags description severity");
 
+    // ── PAYMENT STATUS ─────────────────────────────────────
+    // Completed visits generate a bill (see /visits/:id/complete).
+    // The queue should surface unpaid/part-paid bills so nobody at
+    // the front desk misses a patient leaving without paying —
+    // previously this wasn't visible anywhere except the separate
+    // Checkout page, which meant it was easy to miss entirely.
+    const PatientBill = require("../models/PatientBill");
+    const completedVisitIds = visits.filter((v) => v.status === "Completed").map((v) => v._id);
+    const bills = await PatientBill.find({ visit: { $in: completedVisitIds } }).select(
+      "visit paymentStatus totalAmount amountPaid"
+    );
+    const billsByVisitId = {};
+    bills.forEach((b) => {
+      billsByVisitId[b.visit.toString()] = {
+        paymentStatus: b.paymentStatus,
+        balanceDue: b.totalAmount - b.amountPaid,
+        billId: b._id,
+      };
+    });
+
+    const visitsWithPaymentInfo = visits.map((v) => {
+      const plain = v.toObject ? v.toObject() : v;
+      plain.paymentInfo = billsByVisitId[v._id.toString()] || null;
+      return plain;
+    });
+
     // Status counts for tab badges
     const countResult = await Visit.aggregate([
       { $match: baseFilter },
@@ -121,7 +147,7 @@ router.get("/queue", async (req, res) => {
 
     res.json({
       success: true,
-      data: sanitizeVisits(visits, req.actor),
+      data: sanitizeVisits(visitsWithPaymentInfo, req.actor),
       statusCounts,
       clinic: { id: clinic._id, name: clinic.name },
     });
@@ -522,12 +548,22 @@ router.patch("/visits/:id/complete", requireRole("doctor", "nurse"), async (req,
       }).catch(() => {});
     }
 
+    // ── POINT OF CARE BILLING ────────────────────────────────
+    // Lazy require — same circular-dependency-avoidance pattern used
+    // for reminderService elsewhere in this file.
+    const { generateBillForVisit } = require("../services/billingService");
+    const generatedBill = await generateBillForVisit(visit, visit.clinic).catch((err) => {
+      console.error("Bill generation failed:", err.message);
+      return null; // never let a billing failure break visit completion
+    });
+
     res.json({
       success: true,
       message: "Consultation completed.",
       data: visit,
       appointment: createdAppointment,
       medicationReminders: createdReminders,
+      bill: generatedBill,
     });
   } catch (error) {
     console.error("Complete visit error:", error);
