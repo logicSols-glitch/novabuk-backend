@@ -109,6 +109,63 @@ router.get("/bills/pending", requireRole("doctor", "nurse", "receptionist"), asy
   }
 });
 
+// GET /api/clinic/bills/daily-summary?date=2026-07-18
+// Defaults to today (Lagos time) if no date given.
+// Same role list as /bills/pending above — both render on the same
+// checkout page, so a doctor or nurse viewing pending bills should see
+// the day's totals too, not just the receptionist.
+//
+// MUST come before /bills/:id below — Express matches routes in
+// registration order, and /bills/:id matches ANY single path segment,
+// so a request to /bills/daily-summary was being caught by /bills/:id
+// first (with req.params.id === "daily-summary"), which then tried to
+// findOne({ _id: "daily-summary", ... }) — an invalid ObjectId, so
+// Mongoose throws a CastError there and the route 500s. The dedicated
+// handler below was correct but was 100% unreachable until this move.
+router.get("/bills/daily-summary", requireRole("doctor", "nurse", "receptionist"), async (req, res) => {
+  try {
+    const { startUtc, endUtc } = getLagosDayBoundaries(req.query.date);
+
+    const bills = await PatientBill.find({
+      clinic: req.actor.clinicId,
+      paidAt: { $gte: startUtc, $lt: endUtc },
+      paymentStatus: { $in: ["PAID", "WAIVED"] },
+    });
+
+    const allTodaysBills = await PatientBill.find({
+      clinic: req.actor.clinicId,
+      createdAt: { $gte: startUtc, $lt: endUtc },
+    });
+
+    const summary = {
+      date: startUtc.toISOString().split("T")[0],
+      patientsSeen: allTodaysBills.length,
+      totalRevenue: 0,
+      byPaymentMethod: { CASH: 0, TRANSFER: 0, POS: 0, WAIVED: 0 },
+      outstandingBalance: 0,
+    };
+
+    bills.forEach((bill) => {
+      summary.totalRevenue += bill.amountPaid;
+      if (bill.paymentMethod) {
+        summary.byPaymentMethod[bill.paymentMethod] =
+          (summary.byPaymentMethod[bill.paymentMethod] || 0) + bill.amountPaid;
+      }
+    });
+
+    allTodaysBills.forEach((bill) => {
+      if (["UNPAID", "PART_PAID"].includes(bill.paymentStatus)) {
+        summary.outstandingBalance += bill.totalAmount - bill.amountPaid;
+      }
+    });
+
+    res.json({ success: true, data: summary });
+  } catch (error) {
+    console.error("Daily summary error:", error);
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+});
+
 // GET /api/clinic/bills/:id
 router.get("/bills/:id", requireRole("doctor", "nurse", "receptionist"), async (req, res) => {
   try {
@@ -372,51 +429,5 @@ router.post("/bills/:id/share-whatsapp", requireRole("doctor", "nurse", "recepti
 // ─────────────────────────────────────────────────────────────
 // DAILY CASHIER SUMMARY
 // ─────────────────────────────────────────────────────────────
-
-// GET /api/clinic/bills/daily-summary?date=2026-07-18
-// Defaults to today (Lagos time) if no date given.
-router.get("/bills/daily-summary", requireRole("receptionist"), async (req, res) => {
-  try {
-    const { startUtc, endUtc } = getLagosDayBoundaries(req.query.date);
-
-    const bills = await PatientBill.find({
-      clinic: req.actor.clinicId,
-      paidAt: { $gte: startUtc, $lt: endUtc },
-      paymentStatus: { $in: ["PAID", "WAIVED"] },
-    });
-
-    const allTodaysBills = await PatientBill.find({
-      clinic: req.actor.clinicId,
-      createdAt: { $gte: startUtc, $lt: endUtc },
-    });
-
-    const summary = {
-      date: startUtc.toISOString().split("T")[0],
-      patientsSeen: allTodaysBills.length,
-      totalRevenue: 0,
-      byPaymentMethod: { CASH: 0, TRANSFER: 0, POS: 0, WAIVED: 0 },
-      outstandingBalance: 0,
-    };
-
-    bills.forEach((bill) => {
-      summary.totalRevenue += bill.amountPaid;
-      if (bill.paymentMethod) {
-        summary.byPaymentMethod[bill.paymentMethod] =
-          (summary.byPaymentMethod[bill.paymentMethod] || 0) + bill.amountPaid;
-      }
-    });
-
-    allTodaysBills.forEach((bill) => {
-      if (["UNPAID", "PART_PAID"].includes(bill.paymentStatus)) {
-        summary.outstandingBalance += bill.totalAmount - bill.amountPaid;
-      }
-    });
-
-    res.json({ success: true, data: summary });
-  } catch (error) {
-    console.error("Daily summary error:", error);
-    res.status(500).json({ success: false, message: "Server error." });
-  }
-});
 
 module.exports = router;

@@ -377,6 +377,79 @@ router.get("/bills/:billId/receipt", async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────
+// GET /api/visits/prescriptions/my
+// Patient's own prescriptions across every visit, most recent first.
+// ─────────────────────────────────────────────
+router.get("/prescriptions/my", async (req, res) => {
+  try {
+    const Prescription = require("../models/Prescription");
+    const prescriptions = await Prescription.find({ patient: req.user._id })
+      .populate("clinic", "name location")
+      .populate("visit", "visitType completedAt")
+      .sort({ createdAt: -1 });
+
+    res.json({ success: true, data: prescriptions });
+  } catch (error) {
+    console.error("Get patient prescriptions error:", error);
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+});
+
+// ─────────────────────────────────────────────
+// GET /api/visits/prescriptions/:id/pdf
+// Patient downloads their own prescription as a PDF — same PDF the
+// clinic portal generates, via the shared prescriptionService.
+// ─────────────────────────────────────────────
+router.get("/prescriptions/:id/pdf", async (req, res) => {
+  try {
+    const Prescription = require("../models/Prescription");
+    const { generatePrescriptionPDFBuffer, resolveDoctorName } = require("../services/prescriptionService");
+
+    const prescription = await Prescription.findOne({ _id: req.params.id, patient: req.user._id }).populate(
+      "clinic",
+      "name location"
+    );
+
+    if (!prescription) {
+      return res.status(404).json({ success: false, message: "Prescription not found." });
+    }
+
+    const doctorName = await resolveDoctorName(prescription.doctorId, prescription.doctorType);
+    const pdfBuffer = await generatePrescriptionPDFBuffer(prescription, prescription.clinic, req.user, doctorName);
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="prescription-${prescription._id}.pdf"`);
+    res.send(pdfBuffer);
+  } catch (error) {
+    console.error("Patient prescription PDF error:", error);
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+});
+
+// ─────────────────────────────────────────────
+// GET /api/visits/lab-requests/my
+// Patient's own lab requests. Item-level result fields (resultText,
+// resultFileUrl) are only ever populated once a request reaches
+// RESULT_READY, so there's nothing to strip here — a patient always
+// has the right to see their own finished results, same data the
+// doctor sees.
+// ─────────────────────────────────────────────
+router.get("/lab-requests/my", async (req, res) => {
+  try {
+    const LabRequest = require("../models/LabRequest");
+    const labRequests = await LabRequest.find({ patient: req.user._id })
+      .populate("clinic", "name location")
+      .populate("visit", "visitType completedAt")
+      .sort({ createdAt: -1 });
+
+    res.json({ success: true, data: labRequests });
+  } catch (error) {
+    console.error("Get patient lab requests error:", error);
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+});
+
 module.exports = router;
 
 // ─────────────────────────────────────────────
