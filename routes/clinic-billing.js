@@ -1,5 +1,6 @@
 const express = require("express");
 const router = express.Router();
+const mongoose = require("mongoose");
 
 const ClinicFeeSchedule = require("../models/ClinicFeeSchedule");
 const PatientBill = require("../models/PatientBill");
@@ -125,33 +126,49 @@ router.get("/bills/pending", requireRole("doctor", "nurse", "receptionist"), asy
 router.get("/bills/daily-summary", requireRole("doctor", "nurse", "receptionist"), async (req, res) => {
   try {
     const { startUtc, endUtc } = getLagosDayBoundaries(req.query.date);
+    const clinicId = new mongoose.Types.ObjectId(req.actor.clinicId);
 
-    const bills = await PatientBill.find({
-      clinic: req.actor.clinicId,
-      paidAt: { $gte: startUtc, $lt: endUtc },
-      paymentStatus: { $in: ["PAID", "WAIVED"] },
-    });
-
+    // "Patients seen" — every bill CREATED today (one per completed
+    // visit), regardless of payment status.
     const allTodaysBills = await PatientBill.find({
       clinic: req.actor.clinicId,
       createdAt: { $gte: startUtc, $lt: endUtc },
     });
 
+    // "Revenue" — every individual PAYMENT recorded today, read from
+    // the ledger directly, rather than "bills that reached PAID
+    // today". That distinction matters: a bill that's only PART_PAID
+    // today (e.g. a pharmacist collected cash for drugs at the
+    // counter, but the consultation charge is still outstanding)
+    // previously wasn't counted in revenue AT ALL, since it never
+    // reaches paymentStatus PAID/WAIVED on the day the money actually
+    // came in — it would only show up whenever the LAST payment
+    // happened to settle it, misattributing everything to that later
+    // date. Aggregating the ledger also correctly splits revenue by
+    // the method each individual payment actually used, instead of
+    // the bill's single paymentMethod field, which only ever holds
+    // whichever payment happened most recently.
+    const paymentAgg = await PatientBill.aggregate([
+      { $match: { clinic: clinicId } },
+      { $unwind: "$payments" },
+      { $match: { "payments.recordedAt": { $gte: startUtc, $lt: endUtc } } },
+      { $group: { _id: "$payments.method", total: { $sum: "$payments.amount" } } },
+    ]);
+
+    const byPaymentMethod = { CASH: 0, TRANSFER: 0, POS: 0, WAIVED: 0 };
+    let totalRevenue = 0;
+    paymentAgg.forEach((row) => {
+      byPaymentMethod[row._id] = row.total;
+      totalRevenue += row.total;
+    });
+
     const summary = {
       date: startUtc.toISOString().split("T")[0],
       patientsSeen: allTodaysBills.length,
-      totalRevenue: 0,
-      byPaymentMethod: { CASH: 0, TRANSFER: 0, POS: 0, WAIVED: 0 },
+      totalRevenue,
+      byPaymentMethod,
       outstandingBalance: 0,
     };
-
-    bills.forEach((bill) => {
-      summary.totalRevenue += bill.amountPaid;
-      if (bill.paymentMethod) {
-        summary.byPaymentMethod[bill.paymentMethod] =
-          (summary.byPaymentMethod[bill.paymentMethod] || 0) + bill.amountPaid;
-      }
-    });
 
     allTodaysBills.forEach((bill) => {
       if (["UNPAID", "PART_PAID"].includes(bill.paymentStatus)) {
@@ -162,6 +179,84 @@ router.get("/bills/daily-summary", requireRole("doctor", "nurse", "receptionist"
     res.json({ success: true, data: summary });
   } catch (error) {
     console.error("Daily summary error:", error);
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// GET /api/clinic/bills/payment-history
+// Browsable, filterable list of INDIVIDUAL payment events — every
+// entry from every bill's payments ledger, newest first. This is
+// separate from /bills/daily-summary above (today's totals only, no
+// way to look anything up) and separate from /bills/pending (only
+// shows unsettled bills, nothing about how past ones were actually
+// paid). Query params are all optional:
+//   startDate, endDate  — YYYY-MM-DD, inclusive
+//   method              — CASH | TRANSFER | POS | WAIVED
+//   scope               — GENERAL | PHARMACY
+//   search              — matches against patient name
+//   limit               — default 100, capped at 300
+// ─────────────────────────────────────────────────────────────
+router.get("/bills/payment-history", requireRole("doctor", "nurse", "receptionist"), async (req, res) => {
+  try {
+    const clinicId = new mongoose.Types.ObjectId(req.actor.clinicId);
+    const { startDate, endDate, method, scope, search, limit } = req.query;
+
+    const pipeline = [{ $match: { clinic: clinicId } }, { $unwind: "$payments" }];
+
+    const paymentMatch = {};
+    if (startDate || endDate) {
+      paymentMatch["payments.recordedAt"] = {};
+      if (startDate) paymentMatch["payments.recordedAt"].$gte = new Date(startDate);
+      if (endDate) {
+        const end = new Date(endDate);
+        end.setDate(end.getDate() + 1); // inclusive of the whole end day
+        paymentMatch["payments.recordedAt"].$lt = end;
+      }
+    }
+    if (method) paymentMatch["payments.method"] = method;
+    if (scope) paymentMatch["payments.scope"] = scope;
+    if (Object.keys(paymentMatch).length) pipeline.push({ $match: paymentMatch });
+
+    pipeline.push(
+      {
+        $lookup: {
+          from: "users",
+          localField: "patient",
+          foreignField: "_id",
+          as: "patientDoc",
+        },
+      },
+      { $unwind: { path: "$patientDoc", preserveNullAndEmptyArrays: true } }
+    );
+
+    if (search && search.trim()) {
+      pipeline.push({ $match: { "patientDoc.fullName": { $regex: search.trim(), $options: "i" } } });
+    }
+
+    pipeline.push(
+      { $sort: { "payments.recordedAt": -1 } },
+      { $limit: Math.min(Number(limit) || 100, 300) },
+      {
+        $project: {
+          _id: 0,
+          billId: "$_id",
+          receiptNumber: 1,
+          patientName: "$patientDoc.fullName",
+          patientNovaBukId: "$patientDoc.novaBukId",
+          amount: "$payments.amount",
+          method: "$payments.method",
+          scope: "$payments.scope",
+          recordedByName: "$payments.recordedByName",
+          recordedAt: "$payments.recordedAt",
+        },
+      }
+    );
+
+    const results = await PatientBill.aggregate(pipeline);
+    res.json({ success: true, data: results });
+  } catch (error) {
+    console.error("Payment history error:", error);
     res.status(500).json({ success: false, message: "Server error." });
   }
 });
@@ -301,7 +396,16 @@ router.patch("/bills/:id/pay", requireRole("doctor", "nurse", "receptionist"), a
       }
       bill.waivedReason = waivedReason.trim();
       bill.paymentMethod = "WAIVED";
+      const waivedAmount = bill.totalAmount - bill.amountPaid;
       bill.amountPaid = bill.totalAmount; // treated as fully settled
+      bill.payments.push({
+        amount: waivedAmount,
+        method: "WAIVED",
+        scope: "GENERAL",
+        recordedById: req.actor.id,
+        recordedByType: req.actor.isOwner ? "User" : "ClinicStaff",
+        recordedByName: req.actor.fullName,
+      });
     } else {
       if (!["CASH", "TRANSFER", "POS"].includes(paymentMethod)) {
         return res.status(400).json({
@@ -326,6 +430,14 @@ router.patch("/bills/:id/pay", requireRole("doctor", "nurse", "receptionist"), a
 
       bill.amountPaid = newTotalPaid;
       bill.paymentMethod = paymentMethod;
+      bill.payments.push({
+        amount: amountPaid,
+        method: paymentMethod,
+        scope: "GENERAL",
+        recordedById: req.actor.id,
+        recordedByType: req.actor.isOwner ? "User" : "ClinicStaff",
+        recordedByName: req.actor.fullName,
+      });
 
       // Only actually PAID if the full amount is now covered — a
       // receptionist can't mark PART_PAID as PAID if there's still a
@@ -356,6 +468,99 @@ router.patch("/bills/:id/pay", requireRole("doctor", "nurse", "receptionist"), a
     res.json({ success: true, message: "Payment recorded.", data: bill });
   } catch (error) {
     console.error("Record payment error:", error);
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// PATCH /api/clinic/bills/:id/pay-pharmacy
+// Lets a pharmacist collect payment for the drugs THEY dispensed,
+// right at the pharmacy counter, instead of sending the patient back
+// to the front desk. Strictly scoped to this bill's PHARMACY line
+// items only — a pharmacist can never touch consultation/lab charges,
+// which stay the receptionist's job via /bills/:id/pay above. No
+// WAIVED option here either: forgiving a balance is a front-desk/
+// owner-level financial call, not something decided at the pharmacy
+// counter.
+//
+// amountPaidPharmacy (on the bill) tracks what's been collected
+// through THIS route specifically. The general /pay route above is
+// still free to pay down the WHOLE bill (including pharmacy charges)
+// if that's how a given clinic normally checks patients out — the two
+// routes share the same underlying amountPaid total, so whichever
+// happens first is simply reflected in what's left for the other.
+// ─────────────────────────────────────────────────────────────
+router.patch("/bills/:id/pay-pharmacy", requireRole("pharmacist"), async (req, res) => {
+  try {
+    const bill = await PatientBill.findOne({ _id: req.params.id, clinic: req.actor.clinicId });
+    if (!bill) {
+      return res.status(404).json({ success: false, message: "Bill not found." });
+    }
+
+    if (["PAID", "WAIVED"].includes(bill.paymentStatus)) {
+      return res.status(400).json({ success: false, message: "This bill is already settled." });
+    }
+
+    const pharmacySubtotal = bill.lineItems
+      .filter((item) => item.itemType === "PHARMACY")
+      .reduce((sum, item) => sum + item.lineTotal, 0);
+
+    // Capped by BOTH how much of the pharmacy portion is still
+    // outstanding AND how much of the bill overall is still
+    // outstanding — the second cap matters if a receptionist already
+    // paid down the whole bill (including pharmacy charges) through
+    // the general route, in which case amountPaidPharmacy never moved
+    // but there's still nothing left to actually collect.
+    const overallRemaining = bill.totalAmount - bill.amountPaid;
+    const pharmacyRemaining = Math.max(0, Math.min(pharmacySubtotal - bill.amountPaidPharmacy, overallRemaining));
+
+    if (pharmacyRemaining <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "There's nothing outstanding for pharmacy charges on this bill.",
+      });
+    }
+
+    const { paymentMethod, amountPaid } = req.body;
+    if (!["CASH", "TRANSFER", "POS"].includes(paymentMethod)) {
+      return res.status(400).json({ success: false, message: "paymentMethod must be CASH, TRANSFER, or POS." });
+    }
+    if (typeof amountPaid !== "number" || amountPaid <= 0) {
+      return res.status(400).json({ success: false, message: "amountPaid must be a positive number." });
+    }
+    if (amountPaid > pharmacyRemaining) {
+      return res.status(400).json({
+        success: false,
+        message: `Amount exceeds the outstanding pharmacy balance of \u20a6${pharmacyRemaining.toLocaleString()}. Consultation and lab charges are handled at checkout, not here.`,
+      });
+    }
+
+    bill.amountPaidPharmacy += amountPaid;
+    bill.amountPaid += amountPaid;
+    bill.paymentMethod = paymentMethod;
+    bill.paymentStatus = bill.amountPaid >= bill.totalAmount ? "PAID" : "PART_PAID";
+    bill.payments.push({
+      amount: amountPaid,
+      method: paymentMethod,
+      scope: "PHARMACY",
+      recordedById: req.actor.id,
+      recordedByType: req.actor.isOwner ? "User" : "ClinicStaff",
+      recordedByName: req.actor.fullName,
+    });
+
+    if (bill.paymentStatus === "PAID" && !bill.receiptNumber) {
+      bill.receiptNumber = await generateReceiptNumber();
+      bill.paidAt = new Date();
+    }
+
+    bill.handledById = req.actor.id;
+    bill.handledByType = req.actor.isOwner ? "User" : "ClinicStaff";
+
+    await bill.save();
+
+    res.json({ success: true, message: "Pharmacy payment recorded.", data: bill });
+  } catch (error) {
+    console.error("Record pharmacy payment error:", error);
     res.status(500).json({ success: false, message: "Server error." });
   }
 });

@@ -53,6 +53,15 @@ const patientBillSchema = new mongoose.Schema(
     discount: { type: Number, default: 0, min: 0 },
     totalAmount: { type: Number, required: true, min: 0 }, // subtotal - discount
     amountPaid: { type: Number, default: 0, min: 0 },
+    // Tracks payment collected specifically through the pharmacist's own
+    // checkout (PATCH /bills/:id/pay-pharmacy), scoped to PHARMACY line
+    // items only. Always <= the sum of this bill's PHARMACY line items.
+    // amountPaid (above) is the running total across BOTH this and the
+    // general front-desk payment route — this field exists so we can
+    // work out how much of the pharmacy portion specifically is still
+    // outstanding, without a pharmacist's payment ever being able to
+    // count toward consultation/lab charges.
+    amountPaidPharmacy: { type: Number, default: 0, min: 0 },
 
     paymentStatus: {
       type: String,
@@ -92,6 +101,31 @@ const patientBillSchema = new mongoose.Schema(
         newTotal: { type: Number },
         reason: { type: String },
         editedAt: { type: Date, default: Date.now },
+      },
+    ],
+
+    // Itemized payment ledger — every individual payment event, not
+    // just the running totals above. paymentMethod/amountPaid/
+    // handledById/handledByType (above) still reflect the MOST RECENT
+    // payment for quick display (receipts, bill lists), but this array
+    // is the source of truth for "how did this bill actually get
+    // paid" — e.g. cash collected by the pharmacist for drugs, then a
+    // separate transfer collected by reception for the consultation.
+    // Both /bills/:id/pay and /bills/:id/pay-pharmacy append here.
+    payments: [
+      {
+        amount: { type: Number, required: true },
+        method: { type: String, enum: ["CASH", "TRANSFER", "POS", "WAIVED"], required: true },
+        // Which part of the bill this payment counted against —
+        // PHARMACY payments only ever come from /pay-pharmacy and are
+        // capped there to the bill's PHARMACY line items; GENERAL
+        // covers everything else (consultation, lab, or the whole
+        // bill at once via the front-desk route).
+        scope: { type: String, enum: ["GENERAL", "PHARMACY"], required: true },
+        recordedById: { type: mongoose.Schema.Types.ObjectId, required: true },
+        recordedByType: { type: String, enum: ["User", "ClinicStaff"], required: true },
+        recordedByName: { type: String, required: true }, // snapshot, same reasoning as editedByName above
+        recordedAt: { type: Date, default: Date.now },
       },
     ],
   },

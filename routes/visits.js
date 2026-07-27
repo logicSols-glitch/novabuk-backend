@@ -450,6 +450,55 @@ router.get("/lab-requests/my", async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────
+// GET /api/visits/:id/summary-pdf
+// Patient downloads a "Visit Summary" for one of their own COMPLETED
+// visits — diagnosis, doctor's advice, tests ordered, attending
+// doctor, clinic. Covers a real gap: today the only downloadable
+// documents are the bill receipt and, separately, a prescription —
+// nothing captures the clinical side of a visit for a patient who
+// needs it for insurance, travel, work/school clearance, or to hand
+// to a new doctor.
+// ─────────────────────────────────────────────
+router.get("/:id/summary-pdf", async (req, res) => {
+  try {
+    const { generateVisitSummaryPDFBuffer } = require("../services/visitSummaryService");
+
+    const visit = await Visit.findOne({ _id: req.params.id, user: req.user._id }).populate("clinic", "name location");
+    if (!visit) {
+      return res.status(404).json({ success: false, message: "Visit not found." });
+    }
+    if (visit.status !== "Completed") {
+      return res.status(400).json({ success: false, message: "This visit hasn't been completed yet — no summary is available." });
+    }
+
+    // handledBy can point to either a User (the clinic owner, acting
+    // as doctor) or a ClinicStaff doctor — Visit only stores a single
+    // ObjectId with no type flag to say which, unlike Prescription/
+    // LabRequest (doctorId + doctorType). Try both rather than assume.
+    let doctorName = "—";
+    if (visit.handledBy) {
+      const doctorUser = await User.findById(visit.handledBy).select("fullName");
+      if (doctorUser) {
+        doctorName = doctorUser.fullName;
+      } else {
+        const ClinicStaff = require("../models/ClinicStaff");
+        const doctorStaff = await ClinicStaff.findById(visit.handledBy).select("fullName");
+        if (doctorStaff) doctorName = doctorStaff.fullName;
+      }
+    }
+
+    const pdfBuffer = await generateVisitSummaryPDFBuffer(visit, visit.clinic, req.user, doctorName);
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="visit-summary-${visit._id}.pdf"`);
+    res.send(pdfBuffer);
+  } catch (error) {
+    console.error("Visit summary PDF error:", error);
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+});
+
 module.exports = router;
 
 // ─────────────────────────────────────────────

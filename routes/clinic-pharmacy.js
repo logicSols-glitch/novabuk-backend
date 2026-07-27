@@ -12,6 +12,33 @@ const { generatePrescriptionPDFBuffer, resolveDoctorName } = require("../service
 
 router.use(protectClinicPortal);
 
+// Computes the pharmacy-scoped payment picture for one bill — how much
+// of it is PHARMACY line items, how much of that has been collected
+// specifically through the pharmacist's own checkout (pay-pharmacy),
+// and how much is still outstanding. Shared by both the pending list
+// and the single-prescription detail route below, and mirrors the
+// same capping logic used server-side in clinic-billing.js's
+// /bills/:id/pay-pharmacy route, so what the pharmacist SEES here
+// always matches what they'll actually be allowed to collect.
+function buildBillInfo(bill) {
+  if (!bill) {
+    return { id: null, settled: false, pharmacySubtotal: 0, amountPaidPharmacy: 0, pharmacyRemaining: 0 };
+  }
+  const pharmacySubtotal = bill.lineItems
+    .filter((item) => item.itemType === "PHARMACY")
+    .reduce((sum, item) => sum + item.lineTotal, 0);
+  const overallRemaining = bill.totalAmount - bill.amountPaid;
+  const pharmacyRemaining = Math.max(0, Math.min(pharmacySubtotal - bill.amountPaidPharmacy, overallRemaining));
+
+  return {
+    id: bill._id,
+    settled: ["PAID", "WAIVED"].includes(bill.paymentStatus),
+    pharmacySubtotal,
+    amountPaidPharmacy: bill.amountPaidPharmacy,
+    pharmacyRemaining,
+  };
+}
+
 // Feature 4 gate — Pro/Premium tier only, matching the doc's exact
 // wording (adapted to Growth/Pro naming instead of Basic/Premium).
 async function requireProPlan(req, res, next) {
@@ -90,6 +117,22 @@ router.get("/prescriptions/pending", requireProPlan, requireRole("pharmacist"), 
       .populate("patient", "fullName novaBukId")
       .sort({ createdAt: 1 });
 
+    // Batch-fetch every relevant bill in one query rather than one
+    // lookup per prescription. A pharmacist needs to know BEFORE
+    // dispensing whether this patient's bill is already settled
+    // (PAID/WAIVED) — dispensing after that point won't add a charge
+    // automatically (see the dispense route below) — and, separately,
+    // exactly how much of the pharmacy portion is still outstanding so
+    // they can collect it themselves via pay-pharmacy.
+    const visitIds = prescriptions.map((p) => p.visit);
+    const bills = await PatientBill.find({ visit: { $in: visitIds } }).select(
+      "visit paymentStatus lineItems amountPaid amountPaidPharmacy totalAmount"
+    );
+    const billByVisit = {};
+    bills.forEach((b) => {
+      billByVisit[b.visit.toString()] = b;
+    });
+
     // doctorId/doctorType is either a User (owner) or ClinicStaff — resolve
     // to a display name here so the pharmacist dashboard doesn't need to
     // know about that split at all.
@@ -97,6 +140,7 @@ router.get("/prescriptions/pending", requireProPlan, requireRole("pharmacist"), 
       prescriptions.map(async (p) => {
         const plain = p.toObject();
         plain.doctorName = await resolveDoctorName(p.doctorId, p.doctorType);
+        plain.bill = buildBillInfo(billByVisit[p.visit.toString()]);
         return plain;
       })
     );
@@ -119,6 +163,10 @@ router.get("/prescriptions/:id", requireProPlan, async (req, res) => {
     }
     const plain = prescription.toObject();
     plain.doctorName = await resolveDoctorName(prescription.doctorId, prescription.doctorType);
+    const bill = await PatientBill.findOne({ visit: prescription.visit }).select(
+      "paymentStatus lineItems amountPaid amountPaidPharmacy totalAmount"
+    );
+    plain.bill = buildBillInfo(bill);
     res.json({ success: true, data: plain });
   } catch (error) {
     res.status(500).json({ success: false, message: "Server error." });
