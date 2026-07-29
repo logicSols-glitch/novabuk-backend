@@ -304,4 +304,36 @@ router.get("/prescriptions/:id/pdf", async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────────────────────
+// DELETE /api/clinic/prescriptions/:id
+// Doctor cancels a prescription they just sent, before anything on it
+// has been dispensed — no billing reversal is needed here, unlike
+// the equivalent lab cancellation, because a prescription is never
+// billed at issue time in the first place (see Prescription.js —
+// pharmacy charges only land on the bill at dispense time). Once any
+// item has been dispensed, the whole prescription can no longer be
+// cancelled wholesale; that item is a real transaction that already
+// happened.
+// ─────────────────────────────────────────────────────────────
+router.delete("/prescriptions/:id", requireClinicalRole(), async (req, res) => {
+  try {
+    const prescription = await Prescription.findOne({ _id: req.params.id, clinic: req.actor.clinicId });
+    if (!prescription) {
+      return res.status(404).json({ success: false, message: "Prescription not found." });
+    }
+    if (prescription.items.some((item) => item.dispensed)) {
+      return res.status(400).json({
+        success: false,
+        message: "This prescription already has dispensed items and can no longer be cancelled as a whole.",
+      });
+    }
+
+    await prescription.deleteOne();
+    res.json({ success: true, message: "Prescription cancelled." });
+  } catch (error) {
+    console.error("Cancel prescription error:", error);
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+});
+
 module.exports = router;

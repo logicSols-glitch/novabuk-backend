@@ -330,4 +330,71 @@ router.get("/visits/:visitId/lab-requests", requireProPlan, async (req, res) => 
   }
 });
 
+// ─────────────────────────────────────────────────────────────
+// DELETE /api/clinic/lab-requests/:id
+// Doctor cancels a lab request they just sent, before anything has
+// actually happened at the lab — only allowed while status is still
+// PENDING (no sample collected yet). Once a sample's been collected
+// the lab has already done real work, so cancellation stops being
+// appropriate; the doctor would need to coordinate with the lab
+// directly at that point.
+//
+// Lab charges bill at ORDER time (unlike pharmacy, which bills at
+// dispense time), so cancelling has to also reverse the charge — but
+// only if the bill hasn't already been paid/waived. If it has, the
+// clinical cancellation still goes through (the doctor can still tell
+// the lab "don't run this"), but the money already collected stays as
+// collected; that needs the bill-correction workflow instead of being
+// silently undone here.
+// ─────────────────────────────────────────────────────────────
+router.delete("/lab-requests/:id", requireClinicalRole(), async (req, res) => {
+  try {
+    const labRequest = await LabRequest.findOne({ _id: req.params.id, clinic: req.actor.clinicId });
+    if (!labRequest) {
+      return res.status(404).json({ success: false, message: "Lab request not found." });
+    }
+    if (labRequest.status !== "PENDING") {
+      return res.status(400).json({
+        success: false,
+        message: "Only requests still awaiting sample collection can be cancelled.",
+      });
+    }
+
+    const bill = await PatientBill.findOne({ visit: labRequest.visit });
+    let billNote = "";
+    if (bill && !["PAID", "WAIVED"].includes(bill.paymentStatus)) {
+      // Best-effort removal: match each cancelled item's line item by
+      // description + price (line items don't carry a back-reference
+      // to the specific LabRequest item they came from). If a match
+      // isn't found for some reason, skip it rather than risk removing
+      // the wrong line — the bill can still be fixed via /correct.
+      let removedTotal = 0;
+      labRequest.items.forEach((item) => {
+        if (item.priceCharged === null) return;
+        const idx = bill.lineItems.findIndex(
+          (li) => li.itemType === "LAB" && li.description === item.testName && li.unitPrice === item.priceCharged
+        );
+        if (idx !== -1) {
+          removedTotal += bill.lineItems[idx].lineTotal;
+          bill.lineItems.splice(idx, 1);
+        }
+      });
+      if (removedTotal > 0) {
+        bill.subtotal -= removedTotal;
+        bill.totalAmount = bill.subtotal - bill.discount;
+        await bill.save();
+      }
+    } else if (bill) {
+      billNote = " This visit's bill is already settled, so the original charge was not reversed — it needs a manual correction if a refund is due.";
+    }
+
+    await labRequest.deleteOne();
+
+    res.json({ success: true, message: `Lab request cancelled.${billNote}` });
+  } catch (error) {
+    console.error("Cancel lab request error:", error);
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+});
+
 module.exports = router;
