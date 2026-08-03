@@ -51,6 +51,30 @@ router.get("/", async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────
+// GET /api/clinics/plans
+// Public — subscription plan pricing, read straight from
+// config/plans.js (the single source of truth for pricing). The
+// clinic settings "Upgrade" card fetches this instead of hardcoding
+// numbers, so the price shown can never drift from what actually
+// gets charged.
+// MUST come before /:id (see note below) so "plans" isn't swallowed
+// as a Mongo ObjectId param.
+// ─────────────────────────────────────────────
+router.get("/plans", (req, res) => {
+  const { PLANS } = require("../config/plans");
+
+  const data = Object.entries(PLANS).map(([key, plan]) => ({
+    key,
+    displayName: plan.displayName,
+    priceMonthly: plan.priceMonthly,
+    priceAnnual: plan.priceAnnual, // per month, when billed annually
+    priceAnnualTotal: plan.priceAnnual != null ? plan.priceAnnual * 12 : null, // charged upfront
+  }));
+
+  res.json({ success: true, data });
+});
+
 // ═══════════════════════════════════════════════════════════════
 // DOCTOR SELF-SERVICE ROUTES
 // IMPORTANT: These MUST come BEFORE /:id so Express does not
@@ -600,6 +624,301 @@ router.post("/upgrade", protectClinicPortal, requireRole(), async (req, res) => 
     });
   } catch (error) {
     console.error("Upgrade error:", error);
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// POST /api/clinics/subscription-payments
+// MANUAL provider — clinic submits a claimed payment toward a plan
+// upgrade after already sending a bank transfer outside the app;
+// this records it for a NovaBuk admin to verify against their bank
+// statement (see /admin/subscription-payments/:id/review below).
+// Restricted to requireRole() with no args, same as /upgrade above —
+// only the clinic owner or a delegated ClinicStaff "admin" can
+// initiate a subscription-related financial action, not general staff.
+// ─────────────────────────────────────────────────────────────
+router.post("/subscription-payments", protectClinicPortal, requireRole(), async (req, res) => {
+  try {
+    if (!req.actor.clinicId) {
+      return res.status(400).json({ success: false, message: "No clinic linked to your account." });
+    }
+
+    const { plan = "Pro", billingCycle = "MONTHLY", amount, paymentNote } = req.body;
+
+    const { isValidPlan } = require("../config/plans");
+    if (!isValidPlan(plan)) {
+      return res.status(400).json({ success: false, message: `"${plan}" is not a valid plan.` });
+    }
+    if (!["MONTHLY", "ANNUAL"].includes(billingCycle)) {
+      return res.status(400).json({ success: false, message: 'billingCycle must be "MONTHLY" or "ANNUAL".' });
+    }
+    if (typeof amount !== "number" || amount <= 0) {
+      return res.status(400).json({ success: false, message: "amount must be a positive number." });
+    }
+
+    const { getNextSubscriptionReference, amountForPlan } = require("../services/subscriptionService");
+    const expectedAmount = amountForPlan(plan, billingCycle);
+    if (amount < expectedAmount) {
+      return res.status(400).json({
+        success: false,
+        message: `Amount (\u20a6${amount.toLocaleString()}) is less than the ${plan} ${billingCycle.toLowerCase()} price (\u20a6${expectedAmount.toLocaleString()}).`,
+      });
+    }
+
+    const reference = await getNextSubscriptionReference();
+
+    const SubscriptionPayment = require("../models/SubscriptionPayment");
+    const payment = await SubscriptionPayment.create({
+      clinic: req.actor.clinicId,
+      plan,
+      billingCycle,
+      amount,
+      reference,
+      provider: "MANUAL",
+      paymentNote: paymentNote || "",
+      submittedById: req.actor.id,
+      submittedByType: req.actor.isOwner ? "User" : "ClinicStaff",
+      submittedByEmail: req.actor.email || "",
+      submittedByName: req.actor.fullName || "",
+    });
+
+    res.status(201).json({
+      success: true,
+      message: `Submitted. Include reference ${reference} in your bank transfer narration so it can be matched and verified.`,
+      data: payment,
+    });
+  } catch (error) {
+    console.error("Submit subscription payment error:", error);
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// POST /api/clinics/subscription-payments/nexapay
+// NEXAPAY provider — creates a dedicated virtual account for this
+// upgrade and a matching PENDING SubscriptionPayment row. No admin
+// review needed for this path: NexaPay's deposit.received webhook
+// (routes/webhooksNexapay.js) confirms the transfer and activates the
+// plan automatically the moment it lands.
+// ─────────────────────────────────────────────────────────────
+router.post("/subscription-payments/nexapay", protectClinicPortal, requireRole(), async (req, res) => {
+  try {
+    const { plan, billingCycle = "MONTHLY" } = req.body;
+
+    const { isValidPlan } = require("../config/plans");
+    if (!isValidPlan(plan)) {
+      return res.status(400).json({ success: false, message: `Unknown plan "${plan}".` });
+    }
+    if (!["MONTHLY", "ANNUAL"].includes(billingCycle)) {
+      return res.status(400).json({ success: false, message: 'billingCycle must be "MONTHLY" or "ANNUAL".' });
+    }
+
+    const clinic = await Clinic.findById(req.actor.clinicId);
+    if (!clinic) {
+      return res.status(404).json({ success: false, message: "Clinic not found." });
+    }
+
+    const { getNextSubscriptionReference, amountForPlan } = require("../services/subscriptionService");
+    const { createVirtualAccount } = require("../services/paymentProviders/nexapay");
+
+    const amount = amountForPlan(plan, billingCycle);
+    const reference = await getNextSubscriptionReference();
+    const account = await createVirtualAccount({ clinic, amount, reference });
+
+    const SubscriptionPayment = require("../models/SubscriptionPayment");
+    const payment = await SubscriptionPayment.create({
+      clinic: clinic._id,
+      plan,
+      billingCycle,
+      amount,
+      reference,
+      provider: "NEXAPAY",
+      accountNumber: account.accountNumber,
+      bankName: account.bankName, // VFD Microfinance Bank — see nexapay.js
+      providerTransactionId: account.providerTransactionId,
+      status: "PENDING",
+      submittedById: req.actor.id,
+      submittedByType: req.actor.isOwner ? "User" : "ClinicStaff",
+      submittedByEmail: req.actor.email || "",
+      submittedByName: req.actor.fullName || "",
+    });
+
+    res.status(201).json({
+      success: true,
+      message: "Transfer to the account below to complete your upgrade.",
+      data: {
+        reference,
+        amount,
+        plan,
+        billingCycle,
+        accountNumber: account.accountNumber,
+        bankName: account.bankName,
+        paymentId: payment._id,
+      },
+    });
+  } catch (error) {
+    console.error("NexaPay subscription initiate error:", error.message);
+    res.status(500).json({ success: false, message: "Could not start payment. Please try again." });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// GET /api/clinics/subscription-payments/status/:reference
+// Lightweight poll target for the checkout UI while it waits on the
+// NexaPay webhook — scoped to req.actor.clinicId so one clinic can't
+// probe another clinic's payment references.
+// ─────────────────────────────────────────────────────────────
+router.get("/subscription-payments/status/:reference", protectClinicPortal, requireRole(), async (req, res) => {
+  try {
+    const SubscriptionPayment = require("../models/SubscriptionPayment");
+    const payment = await SubscriptionPayment.findOne({
+      reference: req.params.reference,
+      clinic: req.actor.clinicId,
+    });
+
+    if (!payment) {
+      return res.status(404).json({ success: false, message: "Payment not found." });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        status: payment.status,
+        plan: payment.plan,
+        billingCycle: payment.billingCycle,
+        reviewNote: payment.reviewNote,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// GET /api/clinics/subscription-payments/my
+// Clinic's own submission history — both MANUAL and NEXAPAY rows,
+// newest first.
+// ─────────────────────────────────────────────────────────────
+router.get("/subscription-payments/my", protectClinicPortal, requireRole(), async (req, res) => {
+  try {
+    const SubscriptionPayment = require("../models/SubscriptionPayment");
+    const payments = await SubscriptionPayment.find({ clinic: req.actor.clinicId }).sort({ createdAt: -1 });
+    res.json({ success: true, data: payments });
+  } catch (error) {
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// GET /api/clinics/admin/subscription-payments
+// NovaBuk platform admin — every submission across all clinics,
+// pending ones first, so a reviewer sees what needs action right away.
+// ?status=PENDING|VERIFIED|REJECTED to filter.
+// ─────────────────────────────────────────────────────────────
+router.get("/admin/subscription-payments", protectAdmin, async (req, res) => {
+  try {
+    const SubscriptionPayment = require("../models/SubscriptionPayment");
+    const query = {};
+    if (req.query.status) query.status = req.query.status;
+
+    const payments = await SubscriptionPayment.find(query)
+      .populate("clinic", "name")
+      .sort({ status: 1, createdAt: -1 }); // PENDING < REJECTED < VERIFIED alphabetically — good enough to surface pending first
+
+    res.json({ success: true, data: payments });
+  } catch (error) {
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// PATCH /api/clinics/admin/subscription-payments/:id/review
+// NovaBuk platform admin approves or rejects a MANUAL submission.
+// Approving calls the same activateClinicPlan() helper the NexaPay
+// webhook uses (services/subscriptionService.js), so a clinic ends up
+// in an identical state — including correct ANNUAL vs MONTHLY
+// crediting — regardless of which path granted the upgrade. Only
+// MANUAL rows should ever reach this route; NEXAPAY rows are
+// auto-verified by the webhook and never sit here awaiting review.
+// Body: { decision: "VERIFIED" | "REJECTED", reviewNote? }
+// reviewNote is required when rejecting — it's shown back to the clinic.
+// ─────────────────────────────────────────────────────────────
+router.patch("/admin/subscription-payments/:id/review", protectAdmin, async (req, res) => {
+  try {
+    const SubscriptionPayment = require("../models/SubscriptionPayment");
+    const { decision, reviewNote } = req.body;
+
+    if (!["VERIFIED", "REJECTED"].includes(decision)) {
+      return res.status(400).json({ success: false, message: "decision must be VERIFIED or REJECTED." });
+    }
+    if (decision === "REJECTED" && (!reviewNote || !reviewNote.trim())) {
+      return res.status(400).json({ success: false, message: "A reviewNote is required when rejecting a payment." });
+    }
+
+    const payment = await SubscriptionPayment.findById(req.params.id);
+    if (!payment) {
+      return res.status(404).json({ success: false, message: "Payment submission not found." });
+    }
+    if (payment.status !== "PENDING") {
+      return res.status(400).json({ success: false, message: `This submission was already reviewed (${payment.status}).` });
+    }
+
+    payment.status = decision;
+    payment.reviewedById = req.admin._id;
+    payment.reviewedByName = req.admin.name;
+    payment.reviewedAt = new Date();
+    payment.reviewNote = reviewNote || "";
+    if (decision === "VERIFIED") payment.verifiedVia = "ADMIN_MANUAL";
+    await payment.save();
+
+    let clinic = null;
+    if (decision === "VERIFIED") {
+      clinic = await Clinic.findById(payment.clinic);
+      if (clinic) {
+        const { activateClinicPlan } = require("../services/subscriptionService");
+        await activateClinicPlan({ clinic, plan: payment.plan, billingCycle: payment.billingCycle });
+      }
+    }
+
+    // Email is best-effort — a delivery failure here should never
+    // roll back or fail the review decision that already happened.
+    const notifyEmail = payment.submittedByEmail || (clinic || (await Clinic.findById(payment.clinic)))?.contactEmail;
+    if (notifyEmail) {
+      const {
+        sendSubscriptionActivatedEmail,
+        sendSubscriptionPaymentRejectedEmail,
+      } = require("../services/emailService");
+      const clinicName = clinic?.name || "your clinic";
+
+      const emailPromise =
+        decision === "VERIFIED"
+          ? sendSubscriptionActivatedEmail({
+              to: notifyEmail,
+              clinicName,
+              plan: payment.plan,
+              billingCycle: payment.billingCycle,
+              amount: payment.amount,
+              expiryDate: clinic?.subscriptionExpiry,
+              reference: payment.reference,
+            })
+          : sendSubscriptionPaymentRejectedEmail({
+              to: notifyEmail,
+              clinicName,
+              plan: payment.plan,
+              amount: payment.amount,
+              reference: payment.reference,
+              reason: payment.reviewNote,
+            });
+
+      emailPromise.catch((err) =>
+        console.error(`[clinics] Subscription ${decision.toLowerCase()} email failed for ${payment.reference}:`, err.message)
+      );
+    }
+
+    res.json({ success: true, message: `Payment ${decision.toLowerCase()}.`, data: payment });
+  } catch (error) {
+    console.error("Review subscription payment error:", error);
     res.status(500).json({ success: false, message: "Server error." });
   }
 });

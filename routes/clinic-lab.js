@@ -9,21 +9,15 @@ const PatientBill = require("../models/PatientBill");
 const Notification = require("../models/notification");
 const { protectClinicPortal } = require("../middleware/protectClinicPortal");
 const { requireRole, requireClinicalRole } = require("../middleware/requireRole");
+const { requirePlan } = require("../middleware/planGate");
 const { resolveDoctorName } = require("../services/prescriptionService");
 
 router.use(protectClinicPortal);
 
-async function requireProPlan(req, res, next) {
-  const clinic = await Clinic.findById(req.actor.clinicId);
-  if (!clinic || !["Pro", "Enterprise"].includes(clinic.subscriptionPlan)) {
-    return res.status(403).json({
-      success: false,
-      message: "This feature is available on the Pro plan. Upgrade to unlock lab and pharmacy workflow.",
-    });
-  }
-  req.clinic = clinic;
-  next();
-}
+// PREMIUM-tier gate — see middleware/planGate.js for why this checks
+// the clinic's effective status (is the subscription actually active
+// right now) rather than just the stored subscriptionPlan field.
+const requireProPlan = requirePlan("PREMIUM");
 
 // Only doctor/nurse/owner ever see result fields — enforced here at
 // the response level, not just hidden in the UI. Receptionist and
@@ -101,10 +95,13 @@ router.post("/visits/:visitId/lab-requests", requireProPlan, requireClinicalRole
 
     // ── APPEND LAB LINE ITEMS TO THE BILL, NOW ─────────────
     const bill = await PatientBill.findOne({ visit: visit._id });
+    let billWarning = null;
+    const unpricedTests = [];
     if (bill && !["PAID", "WAIVED"].includes(bill.paymentStatus)) {
       let addedTotal = 0;
       itemsWithPricing.forEach((item) => {
         if (item.priceCharged === null) {
+          unpricedTests.push(item.testName);
           console.warn(
             `[clinic-lab] No price configured for test "${item.testName}" at clinic ${req.actor.clinicId} — skipping bill line item.`
           );
@@ -124,11 +121,25 @@ router.post("/visits/:visitId/lab-requests", requireProPlan, requireClinicalRole
         bill.totalAmount = bill.subtotal - bill.discount;
         await bill.save();
       }
+      if (unpricedTests.length > 0) {
+        billWarning = `No price is configured for: ${unpricedTests.join(", ")}. Add these in Settings → Billing → Lab Price List, then bill the patient manually for now.`;
+      }
     } else if (bill) {
+      billWarning = "This patient's bill is already settled, so these charges were not added automatically. They need a manual correction.";
       console.warn(`[clinic-lab] Bill ${bill._id} already settled — lab charges NOT added. Needs manual correction.`);
+    } else {
+      // No PatientBill exists for this visit at all — same root cause
+      // as the equivalent gap in clinic-pharmacy.js: the clinic hasn't
+      // configured a consultation fee for this visit type, so no bill
+      // was ever auto-created. The lab request still gets created
+      // (never block clinical care over a billing config gap), but the
+      // charge has nowhere to attach to.
+      billWarning =
+        "No bill exists yet for this visit, so these charges could not be added anywhere. This usually means a consultation fee hasn't been configured for this visit type in Settings → Billing.";
+      console.warn(`[clinic-lab] No PatientBill found for visit ${visit._id} — lab charges were not recorded anywhere.`);
     }
 
-    res.status(201).json({ success: true, data: labRequest });
+    res.status(201).json({ success: true, data: labRequest, billWarning });
   } catch (error) {
     console.error("Create lab request error:", error);
     res.status(500).json({ success: false, message: "Server error." });

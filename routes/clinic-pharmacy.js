@@ -8,6 +8,7 @@ const Notification = require("../models/notification");
 const Clinic = require("../models/Clinic");
 const { protectClinicPortal } = require("../middleware/protectClinicPortal");
 const { requireRole, requireClinicalRole } = require("../middleware/requireRole");
+const { requirePlan } = require("../middleware/planGate");
 const { generatePrescriptionPDFBuffer, resolveDoctorName } = require("../services/prescriptionService");
 
 router.use(protectClinicPortal);
@@ -22,7 +23,7 @@ router.use(protectClinicPortal);
 // always matches what they'll actually be allowed to collect.
 function buildBillInfo(bill) {
   if (!bill) {
-    return { id: null, settled: false, pharmacySubtotal: 0, amountPaidPharmacy: 0, pharmacyRemaining: 0 };
+    return { id: null, exists: false, settled: false, pharmacySubtotal: 0, amountPaidPharmacy: 0, pharmacyRemaining: 0 };
   }
   const pharmacySubtotal = bill.lineItems
     .filter((item) => item.itemType === "PHARMACY")
@@ -32,6 +33,7 @@ function buildBillInfo(bill) {
 
   return {
     id: bill._id,
+    exists: true,
     settled: ["PAID", "WAIVED"].includes(bill.paymentStatus),
     pharmacySubtotal,
     amountPaidPharmacy: bill.amountPaidPharmacy,
@@ -39,20 +41,10 @@ function buildBillInfo(bill) {
   };
 }
 
-// Feature 4 gate — Pro/Premium tier only, matching the doc's exact
-// wording (adapted to Growth/Pro naming instead of Basic/Premium).
-async function requireProPlan(req, res, next) {
-  const Clinic = require("../models/Clinic");
-  const clinic = await Clinic.findById(req.actor.clinicId);
-  if (!clinic || !["Pro", "Enterprise"].includes(clinic.subscriptionPlan)) {
-    return res.status(403).json({
-      success: false,
-      message: "This feature is available on the Pro plan. Upgrade to unlock lab and pharmacy workflow.",
-    });
-  }
-  req.clinic = clinic;
-  next();
-}
+// PREMIUM-tier gate — see middleware/planGate.js for why this checks
+// the clinic's effective status (is the subscription actually active
+// right now) rather than just the stored subscriptionPlan field.
+const requireProPlan = requirePlan("PREMIUM");
 
 // ─────────────────────────────────────────────────────────────
 // POST /api/clinic/visits/:visitId/prescriptions
@@ -224,6 +216,7 @@ router.patch(
 
       // ── APPEND PHARMACY LINE ITEM TO THE BILL ──────────────
       const bill = await PatientBill.findOne({ visit: prescription.visit });
+      let billWarning = null;
       if (bill && !["PAID", "WAIVED"].includes(bill.paymentStatus)) {
         const lineTotal = unitPrice * quantity;
         bill.lineItems.push({
@@ -237,12 +230,27 @@ router.patch(
         bill.totalAmount = bill.subtotal - bill.discount;
         await bill.save();
       } else if (bill) {
+        billWarning = "This patient's bill is already settled, so this charge was not added automatically. It needs a manual correction.";
         console.warn(
           `[clinic-pharmacy] Bill ${bill._id} already settled — dispensed drug NOT added to bill. Needs manual follow-up/correction.`
         );
+      } else {
+        // No PatientBill exists for this visit at all — usually means
+        // the clinic hasn't configured a consultation fee for this
+        // visit type in Settings → Billing, so generateBillForVisit()
+        // never created one when the visit was completed. Dispensing
+        // still succeeds (never block clinical care over a billing
+        // config gap), but the charge has nowhere to attach to, so say
+        // so plainly instead of the pharmacist believing it landed
+        // somewhere it didn't.
+        billWarning =
+          "No bill exists yet for this visit, so this charge could not be added anywhere. This usually means a consultation fee hasn't been configured for this visit type in Settings → Billing.";
+        console.warn(
+          `[clinic-pharmacy] No PatientBill found for visit ${prescription.visit} — dispensed drug charge was not recorded anywhere.`
+        );
       }
 
-      res.json({ success: true, message: "Item dispensed.", data: prescription });
+      res.json({ success: true, message: "Item dispensed.", data: prescription, billWarning });
     } catch (error) {
       console.error("Dispense item error:", error);
       res.status(500).json({ success: false, message: "Server error." });

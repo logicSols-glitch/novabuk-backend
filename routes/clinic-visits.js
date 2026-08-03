@@ -9,6 +9,7 @@ const MedicationReminder = require("../models/MedicationReminder");
 const PrivateNote = require("../models/PrivateNote");
 const { protectClinicPortal } = require("../middleware/protectClinicPortal");
 const { requireRole, requireClinicalRole } = require("../middleware/requireRole");
+const { enforceFreeTierLimit } = require("../middleware/enforceFreeTierLimit");
 const { sendVisitConfirmationEmail, sendWalkInWelcomeEmail } = require("../services/emailService");
 
 // All clinic routes require EITHER the clinic owner (Bearer token) OR
@@ -576,7 +577,7 @@ router.patch("/visits/:id/complete", requireRole("doctor", "nurse"), async (req,
 // Search patients who have visited a given clinic.
 // Query: ?clinicId=xxx&q=name
 // ─────────────────────────────────────────────────────────────
-router.get("/patients/search", async (req, res) => {
+router.get("/patients/search", enforceFreeTierLimit("patientHistorySearches"), async (req, res) => {
   try {
     const { q, clinicId } = req.query;
 
@@ -638,7 +639,7 @@ router.get("/patients/search", async (req, res) => {
 // Add a walk-in patient to today's queue.
 // Body: { userId, clinicId, notes? }
 // ─────────────────────────────────────────────────────────────
-router.post("/walk-in", requireRole("doctor", "nurse", "receptionist"), async (req, res) => {
+router.post("/walk-in", requireRole("doctor", "nurse", "receptionist"), enforceFreeTierLimit("newWalkinPatients"), async (req, res) => {
   try {
     const { userId, clinicId, notes } = req.body;
 
@@ -775,7 +776,7 @@ router.get("/patients/:id/history", requireRole("doctor", "nurse"), async (req, 
 // Register a NEW patient AND add them to today's queue.
 // Body: { fullName, email, phone, gender, age, clinicId, notes? }
 // ─────────────────────────────────────────────────────────────
-router.post("/walk-in-new", requireRole("doctor", "nurse", "receptionist"), async (req, res) => {
+router.post("/walk-in-new", requireRole("doctor", "nurse", "receptionist"), enforceFreeTierLimit("newWalkinPatients"), async (req, res) => {
   try {
     const { fullName, email, phone, gender, age, clinicId, notes } = req.body;
 

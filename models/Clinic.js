@@ -70,6 +70,14 @@ const clinicSchema = new mongoose.Schema(
       type: Date,
       default: () => new Date(Date.now() + 60 * 24 * 60 * 60 * 1000),
     },
+    // Stores the exact subscriptionExpiry value a "your subscription
+    // expires soon" email was already sent for (see
+    // services/subscriptionExpiryReminder.js). Comparing against the
+    // CURRENT subscriptionExpiry rather than just a boolean/date flag
+    // means a renewal (which changes subscriptionExpiry to a new,
+    // later date) naturally makes this stale and re-eligible for a
+    // reminder next time — no manual reset needed anywhere.
+    expiryReminderSentFor: { type: Date, default: null },
   },
   { timestamps: true }
 );

@@ -33,6 +33,14 @@ app.use(
   })
 );
 
+// ── WEBHOOKS (must mount BEFORE express.json()) ────────────
+// NexaPay's webhook needs the raw, unparsed request body to verify
+// its HMAC signature — see routes/webhooksNexapay.js for the full
+// explanation. It has its own express.raw() middleware internally,
+// but that only works if this line runs before the global
+// express.json() below ever gets a chance to consume the body.
+app.use("/api/webhooks/nexapay", require("./routes/webhooksNexapay"));
+
 // ── MIDDLEWARE ────────────────────────────────────────────
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -59,6 +67,17 @@ if (process.env.NODE_ENV !== "test") {
 }
 
 const { startReminderScheduler } = require("./services/reminderScheduler");
+const { startSubscriptionExpiryReminder } = require("./services/subscriptionExpiryReminder");
+
+// Only run background jobs against a real DB connection, same
+// reasoning as connectDB() above.
+if (process.env.NODE_ENV !== "test") {
+  // NOTE: this was imported above but never actually called before —
+  // meaning the appointment/medication reminder cron has never once
+  // run. Fixing that here alongside adding the new one.
+  startReminderScheduler();
+  startSubscriptionExpiryReminder();
+}
 
 
 // ── ROUTES — existing ────────────────────────────────────

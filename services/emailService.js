@@ -203,6 +203,56 @@ const sendWalkInWelcomeEmail = async ({ to, name, clinicName, activationUrl, nov
   return sendEmail({ to, subject: `Your health records at ${clinicName} are ready on ${APP_NAME}`, html });
 };
 
+// ── CLINIC SUBSCRIPTION / BILLING EMAILS ──────────────────────
+// Covers the three moments in the subscription payment lifecycle a
+// clinic actually needs to hear about: payment confirmed (plan is
+// live), payment rejected (nothing happened, here's why), and
+// subscription expiring soon (renew before losing access). Sent from
+// routes/webhooksNexapay.js (NexaPay auto-verify/reject), the admin
+// review route in routes/clinics.js (MANUAL verify/reject), and
+// services/subscriptionExpiryReminder.js (the 7-day-out cron) respectively.
+
+const sendSubscriptionActivatedEmail = async ({ to, clinicName, plan, billingCycle, amount, expiryDate, reference }) => {
+  const cycleLabel = billingCycle === "ANNUAL" ? "year" : "month";
+  const expiryStr = new Date(expiryDate).toLocaleDateString("en-NG", { day: "numeric", month: "long", year: "numeric" });
+  const html = wrap(`
+    <h2 style="margin:0 0 8px;color:#1a1a1a;font-size:20px;">Payment confirmed — ${clinicName} is now on ${plan} ✅</h2>
+    <p style="color:#555;line-height:1.7;margin:0 0 24px;">Your ${billingCycle.toLowerCase()} payment of <strong>\u20a6${amount.toLocaleString()}</strong> has been confirmed and your plan is active immediately — no further action needed.</p>
+    <div style="background:#f0f9fa;border-radius:12px;padding:18px 20px;margin-bottom:24px;border:1px solid #35bac9;">
+      <p style="margin:0 0 6px;font-size:13px;color:#4a5568;"><strong>Plan:</strong> Clinic ${plan}</p>
+      <p style="margin:0 0 6px;font-size:13px;color:#4a5568;"><strong>Billed:</strong> \u20a6${amount.toLocaleString()} / ${cycleLabel}</p>
+      <p style="margin:0 0 6px;font-size:13px;color:#4a5568;"><strong>Reference:</strong> ${reference}</p>
+      <p style="margin:0;font-size:13px;color:#4a5568;"><strong>Renews:</strong> ${expiryStr}</p>
+    </div>
+    ${ctaBtn("Open Clinic Settings", `${FRONTEND}/clinic-settings.html`)}
+  `);
+  return sendEmail({ to, subject: `${APP_NAME} payment confirmed — ${clinicName} is now on ${plan}`, html });
+};
+
+const sendSubscriptionPaymentRejectedEmail = async ({ to, clinicName, plan, amount, reference, reason }) => {
+  const html = wrap(`
+    <h2 style="margin:0 0 8px;color:#1a1a1a;font-size:20px;">We couldn't confirm your payment</h2>
+    <p style="color:#555;line-height:1.7;margin:0 0 20px;">Your submission for <strong>${clinicName}</strong> to upgrade to ${plan} (\u20a6${amount.toLocaleString()}, ref: ${reference}) could not be verified.</p>
+    <div style="background:#fff5f5;border-radius:10px;padding:16px 20px;margin-bottom:24px;border:1px solid #fed7d7;">
+      <p style="margin:0;font-size:13px;color:#742a2a;"><strong>Reason:</strong> ${reason || "Payment details did not match."}</p>
+    </div>
+    <p style="color:#555;line-height:1.7;margin:0 0 20px;">Nothing was charged automatically on our side — your clinic's plan is unchanged. If you believe this is a mistake, or your transfer is still processing, you're welcome to submit again or contact support.</p>
+    ${ctaBtn("Try Again", `${FRONTEND}/clinic-settings.html`)}
+  `);
+  return sendEmail({ to, subject: `${APP_NAME} — we couldn't confirm your ${plan} payment`, html });
+};
+
+const sendSubscriptionExpiringEmail = async ({ to, clinicName, plan, expiryDate, daysLeft }) => {
+  const expiryStr = new Date(expiryDate).toLocaleDateString("en-NG", { day: "numeric", month: "long", year: "numeric" });
+  const html = wrap(`
+    <h2 style="margin:0 0 8px;color:#1a1a1a;font-size:20px;">Your ${plan} plan expires in ${daysLeft} day${daysLeft === 1 ? "" : "s"}</h2>
+    <p style="color:#555;line-height:1.7;margin:0 0 20px;"><strong>${clinicName}</strong>'s subscription renews on <strong>${expiryStr}</strong>. Renew before then to avoid any interruption — once it lapses, features like lab/pharmacy workflow and unlimited patient search revert to the free tier's limited version.</p>
+    ${ctaBtn("Renew Now", `${FRONTEND}/clinic-settings.html`)}
+    <p style="color:#aaa;font-size:12px;margin-top:20px;">Already renewed? This may have crossed with your payment — no action needed.</p>
+  `);
+  return sendEmail({ to, subject: `${APP_NAME} — ${clinicName}'s ${plan} plan expires in ${daysLeft} day${daysLeft === 1 ? "" : "s"}`, html });
+};
+
 module.exports = {
   sendEmail,
   sendPasswordResetEmail,
@@ -213,4 +263,7 @@ module.exports = {
   sendDoctorNewBookingEmail,
   sendDoctorCancellationEmail,
   sendOTPEmail,
+  sendSubscriptionActivatedEmail,
+  sendSubscriptionPaymentRejectedEmail,
+  sendSubscriptionExpiringEmail,
 };
