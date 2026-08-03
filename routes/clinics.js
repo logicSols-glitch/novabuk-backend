@@ -720,7 +720,7 @@ router.post("/subscription-payments/nexapay", protectClinicPortal, requireRole()
     }
 
     const { getNextSubscriptionReference, amountForPlan } = require("../services/subscriptionService");
-    const { createVirtualAccount } = require("../services/paymentProviders/nexapay");
+    const { createVirtualAccount } = require("../services/paymentProviders/nexapay.js");
 
     const amount = amountForPlan(plan, billingCycle);
     const reference = await getNextSubscriptionReference();
