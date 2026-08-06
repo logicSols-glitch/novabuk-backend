@@ -62,6 +62,12 @@ const patientBillSchema = new mongoose.Schema(
     // outstanding, without a pharmacist's payment ever being able to
     // count toward consultation/lab charges.
     amountPaidPharmacy: { type: Number, default: 0, min: 0 },
+    // Same idea as amountPaidPharmacy, but for LAB line items and the
+    // lab tech's own checkout (PATCH /bills/:id/pay-lab). Lab charges
+    // land on the bill at ORDER time (not result time, unlike
+    // pharmacy — see LabRequest.js), so this can be collectible
+    // before a single result has even been entered.
+    amountPaidLab: { type: Number, default: 0, min: 0 },
 
     paymentStatus: {
       type: String,
@@ -109,19 +115,21 @@ const patientBillSchema = new mongoose.Schema(
     // handledById/handledByType (above) still reflect the MOST RECENT
     // payment for quick display (receipts, bill lists), but this array
     // is the source of truth for "how did this bill actually get
-    // paid" — e.g. cash collected by the pharmacist for drugs, then a
-    // separate transfer collected by reception for the consultation.
-    // Both /bills/:id/pay and /bills/:id/pay-pharmacy append here.
+    // paid" — e.g. cash collected by the pharmacist for drugs, a
+    // separate transfer collected by the lab tech, and a third
+    // payment collected by reception for the consultation. /bills/:id/pay,
+    // /bills/:id/pay-pharmacy, and /bills/:id/pay-lab all append here.
     payments: [
       {
         amount: { type: Number, required: true },
         method: { type: String, enum: ["CASH", "TRANSFER", "POS", "WAIVED"], required: true },
         // Which part of the bill this payment counted against —
-        // PHARMACY payments only ever come from /pay-pharmacy and are
-        // capped there to the bill's PHARMACY line items; GENERAL
-        // covers everything else (consultation, lab, or the whole
-        // bill at once via the front-desk route).
-        scope: { type: String, enum: ["GENERAL", "PHARMACY"], required: true },
+        // PHARMACY payments only ever come from /pay-pharmacy (capped
+        // to PHARMACY line items), LAB only from /pay-lab (capped to
+        // LAB line items); GENERAL covers everything else
+        // (consultation, or the whole bill at once via the front-desk
+        // route).
+        scope: { type: String, enum: ["GENERAL", "PHARMACY", "LAB"], required: true },
         recordedById: { type: mongoose.Schema.Types.ObjectId, required: true },
         recordedByType: { type: String, enum: ["User", "ClinicStaff"], required: true },
         recordedByName: { type: String, required: true }, // snapshot, same reasoning as editedByName above

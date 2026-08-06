@@ -253,6 +253,23 @@ const sendSubscriptionExpiringEmail = async ({ to, clinicName, plan, expiryDate,
   return sendEmail({ to, subject: `${APP_NAME} — ${clinicName}'s ${plan} plan expires in ${daysLeft} day${daysLeft === 1 ? "" : "s"}`, html });
 };
 
+// ── STAFF ONBOARDING EMAIL ──────────────────────────────────────
+// Sent from routes/clinic-auth.js's POST /my-staff. The clinic owner
+// no longer sets a password for new staff directly — this reuses the
+// exact same passwordResetToken/reset-password flow already built for
+// "forgot password", just framed as onboarding instead of recovery,
+// so the staff member sets their own password and the owner never
+// knows/handles it.
+const sendStaffWelcomeEmail = async ({ to, staffName, clinicName, role, setupUrl }) => {
+  const html = wrap(`
+    <h2 style="margin:0 0 8px;color:#1a1a1a;font-size:20px;">Welcome to ${clinicName} on ${APP_NAME} 👋</h2>
+    <p style="color:#555;line-height:1.7;margin:0 0 20px;">An account has been created for you as a <strong>${role}</strong> at ${clinicName}. Set your password to get started — this link expires in 1 hour.</p>
+    ${ctaBtn("Set Your Password", setupUrl)}
+    <p style="color:#aaa;font-size:12px;margin-top:20px;">If this wasn't expected, you can safely ignore this email.</p>
+  `);
+  return sendEmail({ to, subject: `Welcome to ${clinicName} — set up your ${APP_NAME} account`, html });
+};
+
 module.exports = {
   sendEmail,
   sendPasswordResetEmail,
@@ -266,4 +283,5 @@ module.exports = {
   sendSubscriptionActivatedEmail,
   sendSubscriptionPaymentRejectedEmail,
   sendSubscriptionExpiringEmail,
+  sendStaffWelcomeEmail,
 };

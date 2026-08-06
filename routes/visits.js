@@ -124,16 +124,24 @@ router.post("/request", async (req, res) => {
       isActive: { $ne: false },
     });
 
-    for (const d of doctors) {
-      // In-app notification
-      await Notification.create({
-        user: d._id,
-        type: "visit_requested",
-        title: "New Patient Request",
-        message: `${req.user.fullName} has requested a visit.`,
-        link: "./clinic-queue.html",
-      }).catch(() => {});
+    // In-app notification — keyed by `clinic`, not `user`. The clinic
+    // portal's GET /notifications route (clinic-visits.js) only ever
+    // queries { clinic: clinicId } — a notification created with
+    // `user: doctorId` instead is invisible there forever, even to
+    // the doctor it's nominally for, since they see notifications
+    // through the clinic-portal bell, not a separate personal feed.
+    // Created once here (not once per doctor in the loop below) so a
+    // clinic with several doctors doesn't get duplicate rows for the
+    // same event — this is one clinic-wide event, not a per-doctor one.
+    Notification.create({
+      clinic: clinicId,
+      type: "visit_requested",
+      title: "New Patient Request",
+      message: `${req.user.fullName} has requested a visit.`,
+      link: "./clinic-queue.html",
+    }).catch(err => console.error("Notification create failed:", err.message));
 
+    for (const d of doctors) {
       // Email notification
       const doctorEmailEnabled = d.notificationSettings?.emailNotifications !== false;
       if (doctorEmailEnabled) {
@@ -275,16 +283,18 @@ router.patch("/:id/cancel", async (req, res) => {
       isActive: { $ne: false },
     });
 
-    for (const d of doctorsForCancel) {
-      // In-app notification
-      await Notification.create({
-        user: d._id,
-        type: "visit_cancelled",
-        title: "Patient Cancelled Visit",
-        message: `${req.user.fullName} has cancelled their visit to ${visit.clinic.name}.`,
-        link: "./clinic-queue.html",
-      }).catch(() => {});
+    // Same fix as the new-visit-request notification above — clinic-
+    // keyed, created once (not once per doctor), so it actually shows
+    // up in the clinic portal's notification bell.
+    Notification.create({
+      clinic: visit.clinic._id,
+      type: "visit_cancelled",
+      title: "Patient Cancelled Visit",
+      message: `${req.user.fullName} has cancelled their visit to ${visit.clinic.name}.`,
+      link: "./clinic-queue.html",
+    }).catch(() => {});
 
+    for (const d of doctorsForCancel) {
       // Email notification
       const dCancelEmailEnabled = d.notificationSettings?.emailNotifications !== false;
       if (dCancelEmailEnabled) {

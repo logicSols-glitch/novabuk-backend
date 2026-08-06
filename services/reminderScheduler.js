@@ -28,6 +28,8 @@ const cron = require("node-cron");
 const Appointment = require("../models/Appointment");
 const MedicationReminder = require("../models/MedicationReminder");
 const User = require("../models/User");
+const Clinic = require("../models/Clinic");
+const { getEffectiveStatus } = require("./subscriptionService");
 const {
   sendPushNotification,
   sendSmsReminder,
@@ -38,6 +40,26 @@ const RUN_INTERVAL_MINUTES = 15;
 const INACTIVITY_FALLBACK_HOURS = 48; // per spec: only SMS/WhatsApp if inactive this long
 const WAKING_HOUR_START = 8; // 8am
 const WAKING_HOUR_END = 22; // 10pm
+
+// ── PLAN GATE ──────────────────────────────────────────────────
+// Reminders are a BASIC+ feature per the spec — FREE_TIER clinics
+// (trial over, no active paid plan) shouldn't get them. Uses the same
+// getEffectiveStatus() as everywhere else (services/subscriptionService.js)
+// rather than a stored status field, for the same reason it's used
+// there: computed fresh, never stale from a cron that didn't run.
+// Cached per run (not persisted across runs) since the same handful
+// of clinics show up repeatedly across one batch of due reminders —
+// no reason to hit the DB once per appointment/medication.
+async function isClinicOnEligiblePlan(clinicId, cache) {
+  if (!clinicId) return false;
+  const key = clinicId.toString();
+  if (cache.has(key)) return cache.get(key);
+
+  const clinic = await Clinic.findById(clinicId);
+  const eligible = !!clinic && getEffectiveStatus(clinic) !== "FREE_TIER";
+  cache.set(key, eligible);
+  return eligible;
+}
 
 // ── SHARED: decide push vs SMS/WhatsApp fallback, and send ────
 async function notifyPatient(user, title, body, dataForPush = {}) {
@@ -73,7 +95,7 @@ async function notifyPatient(user, title, body, dataForPush = {}) {
 }
 
 // ── APPOINTMENT REMINDERS (24h and 2h before) ─────────────────
-async function checkAppointmentReminders() {
+async function checkAppointmentReminders(planCache) {
   const now = new Date();
   const windowMs = RUN_INTERVAL_MINUTES * 60 * 1000;
 
@@ -91,6 +113,12 @@ async function checkAppointmentReminders() {
 
   for (const appt of due24h) {
     if (!appt.patient) continue;
+    // FREE_TIER clinics don't get this feature at all — deliberately
+    // NOT marking remindersSent here, since "skip and retry later"
+    // doesn't apply: the sliding window moves on regardless, so an
+    // unmarked appointment simply never gets caught again, which is
+    // the correct outcome for a plan that doesn't include reminders.
+    if (!(await isClinicOnEligiblePlan(appt.clinic, planCache))) continue;
     await notifyPatient(
       appt.patient,
       "Appointment Tomorrow",
@@ -113,6 +141,7 @@ async function checkAppointmentReminders() {
 
   for (const appt of due2h) {
     if (!appt.patient) continue;
+    if (!(await isClinicOnEligiblePlan(appt.clinic, planCache))) continue;
     await notifyPatient(
       appt.patient,
       "Appointment Soon",
@@ -144,7 +173,7 @@ function computeTodaysDoseTimes(frequencyPerDay) {
   return times;
 }
 
-async function checkMedicationReminders() {
+async function checkMedicationReminders(planCache) {
   const now = new Date();
 
   const activeReminders = await MedicationReminder.find({
@@ -156,6 +185,10 @@ async function checkMedicationReminders() {
 
   for (const med of activeReminders) {
     if (!med.patient) continue;
+    // Same plan gate as appointments — check once per medication
+    // record (not once per dose time) since it doesn't change within
+    // a single run.
+    if (!(await isClinicOnEligiblePlan(med.clinic, planCache))) continue;
 
     const doseTimes = computeTodaysDoseTimes(med.frequencyPerDay);
 
@@ -193,8 +226,9 @@ async function checkMedicationReminders() {
 // ── MAIN JOB ───────────────────────────────────────────────────
 async function runReminderCheck() {
   try {
-    await checkAppointmentReminders();
-    await checkMedicationReminders();
+    const planCache = new Map();
+    await checkAppointmentReminders(planCache);
+    await checkMedicationReminders(planCache);
   } catch (err) {
     console.error("[reminderScheduler] Job failed:", err.message);
   }

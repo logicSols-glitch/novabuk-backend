@@ -3,7 +3,7 @@ const router      = express.Router();
 const jwt         = require("jsonwebtoken");
 const crypto      = require("crypto");
 const ClinicStaff = require("../models/ClinicStaff");
-const { sendPasswordResetEmail } = require("../services/emailService");
+const { sendPasswordResetEmail, sendStaffWelcomeEmail } = require("../services/emailService");
 const Clinic      = require("../models/Clinic");
 const { protectClinic }  = require("../middleware/authClinic");
 const { protectAdmin }   = require("../middleware/auth");
@@ -144,12 +144,12 @@ router.get("/me", protectClinic, (req, res) => {
 // ─────────────────────────────────────────────────────────────
 router.post("/register-staff", protectAdmin, async (req, res) => {
   try {
-    const { clinicId, fullName, email, password, role } = req.body;
+    const { clinicId, fullName, email, role } = req.body;
 
-    if (!clinicId || !fullName || !email || !password) {
+    if (!clinicId || !fullName || !email) {
       return res.status(400).json({
         success: false,
-        message: "clinicId, fullName, email and password are all required.",
+        message: "clinicId, fullName and email are all required.",
       });
     }
 
@@ -171,17 +171,39 @@ router.post("/register-staff", protectAdmin, async (req, res) => {
       });
     }
 
+    // Same fix as POST /my-staff above — no admin-supplied password;
+    // throwaway value + immediate reset token, staff sets their own
+    // password via the emailed link.
+    const throwawayPassword = crypto.randomBytes(24).toString("hex");
+
     const staff = await ClinicStaff.create({
       clinic:   clinicId,
       fullName,
-      email,
-      password,
+      email:    email.toLowerCase(),
+      password: throwawayPassword,
       role:     role || "doctor",
     });
 
+    const setupToken = crypto.randomBytes(32).toString("hex");
+    const hashedToken = crypto.createHash("sha256").update(setupToken).digest("hex");
+    staff.passwordResetToken = hashedToken;
+    staff.passwordResetExpires = Date.now() + 3600000;
+    await staff.save({ validateBeforeSave: false });
+
+    const setupUrl = `${process.env.FRONTEND_URL}/clinic-reset-password.html?token=${setupToken}&mode=welcome`;
+    console.log("🔑 [DEV] New Staff Setup URL (admin-registered):", setupUrl);
+
+    sendStaffWelcomeEmail({
+      to: staff.email,
+      staffName: staff.fullName,
+      clinicName: clinic.name,
+      role: staff.role,
+      setupUrl,
+    }).catch((err) => console.error("Staff welcome email failed:", err.message));
+
     res.status(201).json({
       success: true,
-      message: "Staff account created successfully.",
+      message: "Staff account created — an email has been sent for them to set their password.",
       staff: {
         id:       staff._id,
         fullName: staff.fullName,
@@ -361,12 +383,12 @@ router.post("/my-staff", protectClinicPortal, requireRole(), async (req, res) =>
       });
     }
 
-    const { fullName, email, password, role } = req.body;
+    const { fullName, email, role } = req.body;
 
-    if (!fullName || !email || !password) {
+    if (!fullName || !email) {
       return res.status(400).json({
         success: false,
-        message: "fullName, email and password are required.",
+        message: "fullName and email are required.",
       });
     }
 
@@ -391,17 +413,52 @@ router.post("/my-staff", protectClinicPortal, requireRole(), async (req, res) =>
       });
     }
 
+    // No owner-supplied password anymore — the owner shouldn't need
+    // to know (or invent) another person's password. This throwaway
+    // value satisfies the schema's required password field but is
+    // never actually usable: passwordResetToken is set immediately
+    // below, and the staff member sets their own real password via
+    // the emailed link before they can log in at all. Random, not
+    // guessable, and long enough that even if the email somehow never
+    // arrived, nobody could brute-force it into their account.
+    const throwawayPassword = crypto.randomBytes(24).toString("hex");
+
     const newStaff = await ClinicStaff.create({
       clinic: req.actor.clinicId,
       fullName,
       email: email.toLowerCase(),
-      password,
+      password: throwawayPassword,
       role: role || "nurse",
     });
 
+    // Same token mechanism as POST /forgot-password below — this is
+    // deliberately reusing that exact flow rather than building a
+    // separate one, so there's only one password-setting code path to
+    // maintain, whether it's "I forgot" or "this is my first time".
+    const setupToken = crypto.randomBytes(32).toString("hex");
+    const hashedToken = crypto.createHash("sha256").update(setupToken).digest("hex");
+    newStaff.passwordResetToken = hashedToken;
+    newStaff.passwordResetExpires = Date.now() + 3600000; // 1 hour
+    await newStaff.save({ validateBeforeSave: false });
+
+    const setupUrl = `${process.env.FRONTEND_URL}/clinic-reset-password.html?token=${setupToken}&mode=welcome`;
+    console.log("🔑 [DEV] New Staff Setup URL:", setupUrl);
+
+    // Best-effort — the account already exists at this point, so a
+    // failed email shouldn't fail the whole request (the owner can
+    // still see the staff member was created, and forgot-password
+    // remains a fallback way to get a working setup link later).
+    sendStaffWelcomeEmail({
+      to: newStaff.email,
+      staffName: newStaff.fullName,
+      clinicName: clinic.name,
+      role: newStaff.role,
+      setupUrl,
+    }).catch((err) => console.error("Staff welcome email failed:", err.message));
+
     res.status(201).json({
       success: true,
-      message: "Staff member added successfully.",
+      message: "Staff member added — an email has been sent for them to set their password.",
       staff: {
         id: newStaff._id,
         fullName: newStaff.fullName,

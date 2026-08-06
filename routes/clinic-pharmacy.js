@@ -6,12 +6,20 @@ const Visit = require("../models/Visit");
 const PatientBill = require("../models/PatientBill");
 const Notification = require("../models/notification");
 const Clinic = require("../models/Clinic");
+const DrugStock = require("../models/DrugStock");
 const { protectClinicPortal } = require("../middleware/protectClinicPortal");
 const { requireRole, requireClinicalRole } = require("../middleware/requireRole");
-const { requirePlan } = require("../middleware/planGate");
 const { generatePrescriptionPDFBuffer, resolveDoctorName } = require("../services/prescriptionService");
 
 router.use(protectClinicPortal);
+
+// Free-text drug names go straight into a regex for case-insensitive
+// matching (see the stock check below) — escaping this is what stops
+// a drug name containing regex special characters from either
+// breaking the query or matching more broadly than intended.
+function escapeRegex(str) {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 // Computes the pharmacy-scoped payment picture for one bill — how much
 // of it is PHARMACY line items, how much of that has been collected
@@ -41,10 +49,20 @@ function buildBillInfo(bill) {
   };
 }
 
-// PREMIUM-tier gate — see middleware/planGate.js for why this checks
-// the clinic's effective status (is the subscription actually active
-// right now) rather than just the stored subscriptionPlan field.
-const requireProPlan = requirePlan("PREMIUM");
+// Feature 4 gate — Pro/Premium tier only, matching the doc's exact
+// wording (adapted to Growth/Pro naming instead of Basic/Premium).
+async function requireProPlan(req, res, next) {
+  const Clinic = require("../models/Clinic");
+  const clinic = await Clinic.findById(req.actor.clinicId);
+  if (!clinic || !["Pro", "Enterprise"].includes(clinic.subscriptionPlan)) {
+    return res.status(403).json({
+      success: false,
+      message: "This feature is available on the Pro plan. Upgrade to unlock lab and pharmacy workflow.",
+    });
+  }
+  req.clinic = clinic;
+  next();
+}
 
 // ─────────────────────────────────────────────────────────────
 // POST /api/clinic/visits/:visitId/prescriptions
@@ -200,6 +218,25 @@ router.patch(
         return res.status(400).json({ success: false, message: "This item has already been dispensed." });
       }
 
+      // ── STOCK CHECK (opt-in — see models/DrugStock.js) ──────
+      // No record for this drug at all → nothing to check against,
+      // dispense proceeds exactly as it always has. A record DOES
+      // exist → this is now a real physical constraint, not a config
+      // gap, so it blocks (unlike the billing gaps below, which never
+      // block clinical action — you genuinely cannot hand over a
+      // pill that isn't there, the way you CAN still see a patient
+      // without a configured consultation fee).
+      const stockEntry = await DrugStock.findOne({
+        clinic: req.actor.clinicId,
+        drugName: new RegExp(`^${escapeRegex(item.drugName.trim())}$`, "i"),
+      });
+      if (stockEntry && stockEntry.quantityOnHand < quantity) {
+        return res.status(400).json({
+          success: false,
+          message: `Only ${stockEntry.quantityOnHand} ${stockEntry.unit} of ${item.drugName} left in stock — can't dispense ${quantity}. Restock or dispense a smaller amount.`,
+        });
+      }
+
       item.dispensed = true;
       item.dispensedAt = new Date();
       item.dispensedById = req.actor.id;
@@ -213,6 +250,18 @@ router.patch(
       prescription.status = allDispensed ? "COMPLETED" : anyDispensed ? "PARTIALLY_DISPENSED" : "ISSUED";
 
       await prescription.save();
+
+      // Decrement AFTER the prescription save succeeds — if something
+      // above failed, stock shouldn't move for a dispense that didn't
+      // actually happen.
+      let stockWarning = null;
+      if (stockEntry) {
+        stockEntry.quantityOnHand -= quantity;
+        await stockEntry.save();
+        if (stockEntry.quantityOnHand <= stockEntry.reorderThreshold) {
+          stockWarning = `Low stock: only ${stockEntry.quantityOnHand} ${stockEntry.unit} of ${item.drugName} left.`;
+        }
+      }
 
       // ── APPEND PHARMACY LINE ITEM TO THE BILL ──────────────
       const bill = await PatientBill.findOne({ visit: prescription.visit });
@@ -250,7 +299,7 @@ router.patch(
         );
       }
 
-      res.json({ success: true, message: "Item dispensed.", data: prescription, billWarning });
+      res.json({ success: true, message: "Item dispensed.", data: prescription, billWarning, stockWarning });
     } catch (error) {
       console.error("Dispense item error:", error);
       res.status(500).json({ success: false, message: "Server error." });
@@ -259,7 +308,132 @@ router.patch(
 );
 
 // ─────────────────────────────────────────────────────────────
-// GET /api/clinic/visits/:visitId/prescriptions
+// GET /api/clinic/drug-stock
+// List every tracked drug for this clinic — powers the Inventory
+// panel. A clinic that's never used this at all just gets an empty
+// list; nothing here is required for the pharmacy workflow to work.
+// ─────────────────────────────────────────────────────────────
+router.get("/drug-stock", requireProPlan, async (req, res) => {
+  try {
+    const stock = await DrugStock.find({ clinic: req.actor.clinicId }).sort({ drugName: 1 });
+    res.json({ success: true, data: stock });
+  } catch (error) {
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// PUT /api/clinic/drug-stock
+// Bulk SET (not additive) — mirrors clinic-lab.js's PUT
+// /lab-price-list exactly. Use this for initial setup or correcting
+// a miscount; use POST /drug-stock/:id/restock (below) for the
+// day-to-day "50 more just arrived" action, which adds rather than
+// overwrites.
+// Body: { drugs: [{ drugName, quantityOnHand, reorderThreshold?, unit? }] }
+// ─────────────────────────────────────────────────────────────
+router.put("/drug-stock", requireProPlan, requireRole(), async (req, res) => {
+  try {
+    const { drugs } = req.body;
+    if (!Array.isArray(drugs) || !drugs.length) {
+      return res.status(400).json({ success: false, message: "At least one drug is required." });
+    }
+
+    const updated = [];
+    for (const d of drugs) {
+      if (!d.drugName || typeof d.quantityOnHand !== "number" || d.quantityOnHand < 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Each drug needs a drugName and a non-negative quantityOnHand.",
+        });
+      }
+
+      // Case-insensitive match — previously this compared drugName
+      // exactly, while the dispense route (and the frontend's own
+      // stock-line lookup) both match case-insensitively. That
+      // mismatch meant "Paracetamol" and "paracetamol" silently
+      // became two different rows instead of one being an edit of
+      // the other — confusing, and a real risk if dispensing only
+      // ever finds one of the two.
+      const existing = await DrugStock.findOne({
+        clinic: req.actor.clinicId,
+        drugName: new RegExp(`^${escapeRegex(d.drugName.trim())}$`, "i"),
+      });
+
+      if (existing) {
+        existing.quantityOnHand = d.quantityOnHand;
+        if (d.reorderThreshold !== undefined) existing.reorderThreshold = d.reorderThreshold;
+        if (d.unit) existing.unit = d.unit;
+        await existing.save();
+        updated.push(existing);
+      } else {
+        const created = await DrugStock.create({
+          clinic: req.actor.clinicId,
+          drugName: d.drugName.trim(),
+          quantityOnHand: d.quantityOnHand,
+          ...(d.reorderThreshold !== undefined && { reorderThreshold: d.reorderThreshold }),
+          ...(d.unit && { unit: d.unit }),
+        });
+        updated.push(created);
+      }
+    }
+
+    res.json({ success: true, message: "Stock updated.", data: updated });
+  } catch (error) {
+    if (error.code === 11000) {
+      return res.status(400).json({ success: false, message: "Duplicate drug name in this request." });
+    }
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// DELETE /api/clinic/drug-stock/:id
+// Removes a tracked drug entirely — e.g. a mistaken entry, or a drug
+// the clinic no longer wants to track stock for. Doesn't affect any
+// past dispense records; it only stops future dispenses of that drug
+// from being checked/decremented against anything.
+// ─────────────────────────────────────────────────────────────
+router.delete("/drug-stock/:id", requireProPlan, requireRole(), async (req, res) => {
+  try {
+    const entry = await DrugStock.findOneAndDelete({ _id: req.params.id, clinic: req.actor.clinicId });
+    if (!entry) {
+      return res.status(404).json({ success: false, message: "Stock entry not found." });
+    }
+    res.json({ success: true, message: "Removed from inventory." });
+  } catch (error) {
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// POST /api/clinic/drug-stock/:id/restock
+// Additive — adds `quantity` to whatever's already on hand, and
+// stamps lastRestockedAt. This is the routine "delivery just came in"
+// action; PUT above is for setup/corrections.
+// ─────────────────────────────────────────────────────────────
+router.post("/drug-stock/:id/restock", requireProPlan, requireRole(), async (req, res) => {
+  try {
+    const { quantity } = req.body;
+    if (typeof quantity !== "number" || quantity <= 0) {
+      return res.status(400).json({ success: false, message: "quantity must be a positive number." });
+    }
+
+    const entry = await DrugStock.findOne({ _id: req.params.id, clinic: req.actor.clinicId });
+    if (!entry) {
+      return res.status(404).json({ success: false, message: "Stock entry not found." });
+    }
+
+    entry.quantityOnHand += quantity;
+    entry.lastRestockedAt = new Date();
+    await entry.save();
+
+    res.json({ success: true, message: "Restocked.", data: entry });
+  } catch (error) {
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+});
+
+
 // Existing prescription(s) tied to one visit — used by the
 // consultation page to show issued/dispensed status after the fact.
 // A visit can only be completed (and therefore a prescription

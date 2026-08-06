@@ -14,9 +14,13 @@ const { resolveDoctorName } = require("../services/prescriptionService");
 
 router.use(protectClinicPortal);
 
-// PREMIUM-tier gate — see middleware/planGate.js for why this checks
-// the clinic's effective status (is the subscription actually active
-// right now) rather than just the stored subscriptionPlan field.
+// PREMIUM-tier gate — checks the clinic's EFFECTIVE status (is the
+// subscription actually active right now), not just the stored
+// subscriptionPlan field. That field never resets once set, so a
+// clinic that paid for Pro once and then let it lapse would otherwise
+// keep lab/pharmacy access forever. Same fix already applied to
+// clinic-pharmacy.js — this file had drifted back to the old local
+// version in a later re-upload, so reapplying it here.
 const requireProPlan = requirePlan("PREMIUM");
 
 // Only doctor/nurse/owner ever see result fields — enforced here at

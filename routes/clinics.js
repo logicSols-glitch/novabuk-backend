@@ -5,7 +5,7 @@ const { protectUser } = require("../middleware/authUser");
 const { protectDoctor } = require("../middleware/authDoctor.js");
 const { protectClinicPortal } = require("../middleware/protectClinicPortal");
 const { requireRole } = require("../middleware/requireRole");
-const { protectAdmin } = require("../middleware/auth");
+const { protectAdmin, requireAdminRole } = require("../middleware/auth");
 const User = require("../models/User");
 const Visit = require("../models/Visit");
 
@@ -379,8 +379,60 @@ router.get("/:id", async (req, res) => {
 // ADMIN ROUTES
 // ─────────────────────────────────────────────
 
+// ─────────────────────────────────────────────
+// GET /api/clinics/admin/all
+// Admin only — paginated, searchable clinic list for the dashboard.
+// Kept as its own route (rather than adding page/limit to the public
+// GET / above) so the patient-facing clinic directory's behavior and
+// response shape is left completely untouched.
+// ─────────────────────────────────────────────
+router.get("/admin/all", protectAdmin, requireAdminRole("admin"), async (req, res) => {
+  try {
+    const { search, isActive, plan, page = 1, limit = 10 } = req.query;
+
+    const filter = {};
+
+    if (search) {
+      filter.$or = [
+        { name: { $regex: search, $options: "i" } },
+        { "location.city": { $regex: search, $options: "i" } },
+        { "location.address": { $regex: search, $options: "i" } },
+      ];
+    }
+
+    if (isActive !== undefined) {
+      filter.isActive = isActive === "true";
+    }
+
+    if (plan) {
+      filter.subscriptionPlan = plan;
+    }
+
+    const skip = (page - 1) * limit;
+
+    const [clinics, total] = await Promise.all([
+      Clinic.find(filter)
+        .sort({ name: 1 })
+        .skip(skip)
+        .limit(parseInt(limit)),
+      Clinic.countDocuments(filter),
+    ]);
+
+    res.json({
+      success: true,
+      count: clinics.length,
+      total,
+      pages: Math.ceil(total / limit),
+      currentPage: parseInt(page),
+      data: clinics,
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+});
+
 // POST /api/clinics — add new clinic + doctor account (admin)
-router.post("/", protectAdmin, async (req, res) => {
+router.post("/", protectAdmin, requireAdminRole("admin"), async (req, res) => {
   try {
     const { 
       name, location, phone, email, services,
@@ -449,7 +501,7 @@ router.post("/", protectAdmin, async (req, res) => {
 });
 
 // PUT /api/clinics/:id — edit clinic (admin)
-router.put("/:id", protectAdmin, async (req, res) => {
+router.put("/:id", protectAdmin, requireAdminRole("admin"), async (req, res) => {
   try {
     const clinic = await Clinic.findByIdAndUpdate(req.params.id, req.body, {
       new: true,
@@ -467,7 +519,7 @@ router.put("/:id", protectAdmin, async (req, res) => {
 });
 
 // DELETE /api/clinics/:id — toggle active/inactive (admin)
-router.delete("/:id", protectAdmin, async (req, res) => {
+router.delete("/:id", protectAdmin, requireAdminRole("admin"), async (req, res) => {
   try {
     const clinic = await Clinic.findById(req.params.id);
     if (!clinic)
@@ -487,7 +539,7 @@ router.delete("/:id", protectAdmin, async (req, res) => {
 });
 
 // PATCH /api/clinics/:id/toggle — toggle open/closed (admin)
-router.patch("/:id/toggle", protectAdmin, async (req, res) => {
+router.patch("/:id/toggle", protectAdmin, requireAdminRole("admin"), async (req, res) => {
   try {
     const { isOpen } = req.body;
     const clinic = await Clinic.findByIdAndUpdate(
@@ -510,7 +562,7 @@ router.patch("/:id/toggle", protectAdmin, async (req, res) => {
 });
 
 // GET /api/clinics/admin/:id/stats — get clinic activity stats (admin)
-router.get("/admin/:id/stats", protectAdmin, async (req, res) => {
+router.get("/admin/:id/stats", protectAdmin, requireAdminRole("admin"), async (req, res) => {
   try {
     const clinicId = req.params.id;
     
@@ -541,102 +593,26 @@ router.get("/admin/:id/stats", protectAdmin, async (req, res) => {
   }
 });
 
-// ─────────────────────────────────────────────
-// POST /api/clinics/upgrade
-// Doctor/Clinic Admin — upgrade subscription plan
-// ─────────────────────────────────────────────
-router.post("/upgrade", protectClinicPortal, requireRole(), async (req, res) => {
-  try {
-    if (!req.actor.clinicId) {
-      return res.status(400).json({
-        success: false,
-        message: "No clinic linked to your account.",
-      });
-    }
-
-    const { reference, plan = "Pro", provider = "customProvider" } = req.body;
-
-    if (!reference) {
-      return res.status(400).json({
-        success: false,
-        message: "Payment reference/transaction reference is required.",
-      });
-    }
-
-    const { isValidPlan, getPlan } = require("../config/plans");
-    if (!isValidPlan(plan)) {
-      return res.status(400).json({
-        success: false,
-        message: `"${plan}" is not a valid plan.`,
-      });
-    }
-
-    // ── VERIFY THE PAYMENT — do not trust the client-supplied reference ──
-    // Previously this route activated the plan on ANY reference string
-    // with no verification at all. That's a free-upgrade exploit — anyone
-    // logged in as a doctor could POST a fake reference and get Pro free.
-    const { verifyPayment } = require("../services/paymentProviders");
-    const verification = await verifyPayment(provider, reference);
-
-    if (!verification.success) {
-      return res.status(402).json({
-        success: false,
-        message: verification.error || "Payment could not be verified.",
-      });
-    }
-
-    // Sanity-check the amount paid matches what the plan actually costs.
-    // Prevents someone paying for a cheaper plan then sending that
-    // reference with plan="Pro" in the request body.
-    const planConfig = getPlan(plan);
-    if (planConfig?.priceMonthly && verification.amount < planConfig.priceMonthly) {
-      return res.status(402).json({
-        success: false,
-        message: `Amount paid (₦${verification.amount}) does not match the ${planConfig.displayName} plan price (₦${planConfig.priceMonthly}).`,
-      });
-    }
-
-    // Update the clinic's plan, status, and set expiry to 30 days from now
-    const expiryDate = new Date();
-    expiryDate.setDate(expiryDate.getDate() + 30);
-
-    const clinic = await Clinic.findByIdAndUpdate(
-      req.actor.clinicId,
-      {
-        subscriptionPlan: plan,
-        subscriptionStatus: "Active",
-        subscriptionExpiry: expiryDate,
-      },
-      { new: true }
-    );
-
-    if (!clinic) {
-      return res.status(404).json({
-        success: false,
-        message: "Clinic not found.",
-      });
-    }
-
-    res.json({
-      success: true,
-      message: `Clinic upgraded to ${plan} successfully.`,
-      clinic,
-    });
-  } catch (error) {
-    console.error("Upgrade error:", error);
-    res.status(500).json({ success: false, message: "Server error." });
-  }
-});
-
 // ─────────────────────────────────────────────────────────────
 // POST /api/clinics/subscription-payments
 // MANUAL provider — clinic submits a claimed payment toward a plan
 // upgrade after already sending a bank transfer outside the app;
 // this records it for a NovaBuk admin to verify against their bank
 // statement (see /admin/subscription-payments/:id/review below).
-// Restricted to requireRole() with no args, same as /upgrade above —
-// only the clinic owner or a delegated ClinicStaff "admin" can
-// initiate a subscription-related financial action, not general staff.
+// Restricted to requireRole() with no args — only the clinic owner or
+// a delegated ClinicStaff "admin" can initiate a subscription-related
+// financial action, not general staff.
+//
+// (This file used to also have a POST /upgrade route — activated a
+// plan directly off a client-supplied provider+reference with no
+// SubscriptionPayment record at all, so it never showed up in
+// billing history and used a flat 30-day expiry regardless of
+// monthly/annual. Removed: nothing calls it anymore now that
+// /subscription-payments (this route, MANUAL) and
+// /subscription-payments/nexapay (NEXAPAY, auto-verified via
+// webhook) exist with full audit trails. If something external still
+// depends on POST /upgrade, that's the signal to restore it rather
+// than assume.)
 // ─────────────────────────────────────────────────────────────
 router.post("/subscription-payments", protectClinicPortal, requireRole(), async (req, res) => {
   try {
@@ -720,7 +696,7 @@ router.post("/subscription-payments/nexapay", protectClinicPortal, requireRole()
     }
 
     const { getNextSubscriptionReference, amountForPlan } = require("../services/subscriptionService");
-    const { createVirtualAccount } = require("../services/paymentProviders/nexapay.js");
+    const { createVirtualAccount } = require("../services/paymentProviders/nexapay");
 
     const amount = amountForPlan(plan, billingCycle);
     const reference = await getNextSubscriptionReference();
@@ -816,7 +792,7 @@ router.get("/subscription-payments/my", protectClinicPortal, requireRole(), asyn
 // pending ones first, so a reviewer sees what needs action right away.
 // ?status=PENDING|VERIFIED|REJECTED to filter.
 // ─────────────────────────────────────────────────────────────
-router.get("/admin/subscription-payments", protectAdmin, async (req, res) => {
+router.get("/admin/subscription-payments", protectAdmin, requireAdminRole("admin"), async (req, res) => {
   try {
     const SubscriptionPayment = require("../models/SubscriptionPayment");
     const query = {};
@@ -844,7 +820,7 @@ router.get("/admin/subscription-payments", protectAdmin, async (req, res) => {
 // Body: { decision: "VERIFIED" | "REJECTED", reviewNote? }
 // reviewNote is required when rejecting — it's shown back to the clinic.
 // ─────────────────────────────────────────────────────────────
-router.patch("/admin/subscription-payments/:id/review", protectAdmin, async (req, res) => {
+router.patch("/admin/subscription-payments/:id/review", protectAdmin, requireAdminRole("admin"), async (req, res) => {
   try {
     const SubscriptionPayment = require("../models/SubscriptionPayment");
     const { decision, reviewNote } = req.body;

@@ -1108,8 +1108,8 @@ router.delete("/account", protectUser, async (req, res) => {
 });
 
 // Admin: Get total count (patient count)
-const { protectAdmin } = require("../middleware/auth");
-router.get("/admin/count", protectAdmin, async (req, res) => {
+const { protectAdmin, requireAdminRole } = require("../middleware/auth");
+router.get("/admin/count", protectAdmin, requireAdminRole("admin"), async (req, res) => {
   try {
     const count = await User.countDocuments({ role: "Patient" });
     res.json({ success: true, count });
@@ -1118,18 +1118,61 @@ router.get("/admin/count", protectAdmin, async (req, res) => {
   }
 });
 
-// Admin: Get all users (patient list)
-router.get("/admin/all", protectAdmin, async (req, res) => {
+// Admin: Get all users (patient list) — paginated & searchable
+router.get("/admin/all", protectAdmin, requireAdminRole("admin"), async (req, res) => {
   try {
-    const users = await User.find({ role: "Patient" }).sort({ createdAt: -1 });
-    res.json({ success: true, data: users });
+    const {
+      search,
+      isVerified,
+      isActive,
+      page = 1,
+      limit = 10,
+    } = req.query;
+
+    const filter = { role: "Patient" };
+
+    if (search) {
+      filter.$or = [
+        { fullName: { $regex: search, $options: "i" } },
+        { email: { $regex: search, $options: "i" } },
+        { phone: { $regex: search, $options: "i" } },
+        { novaBukId: { $regex: search, $options: "i" } },
+      ];
+    }
+
+    if (isVerified !== undefined) {
+      filter.isVerified = isVerified === "true";
+    }
+
+    if (isActive !== undefined) {
+      filter.isActive = isActive === "true";
+    }
+
+    const skip = (page - 1) * limit;
+
+    const [users, total] = await Promise.all([
+      User.find(filter)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(parseInt(limit)),
+      User.countDocuments(filter),
+    ]);
+
+    res.json({
+      success: true,
+      count: users.length,
+      total,
+      pages: Math.ceil(total / limit),
+      currentPage: parseInt(page),
+      data: users,
+    });
   } catch (error) {
     res.status(500).json({ success: false, message: "Server error" });
   }
 });
 
 // Admin: Toggle user status
-router.patch("/admin/:id/toggle", protectAdmin, async (req, res) => {
+router.patch("/admin/:id/toggle", protectAdmin, requireAdminRole("admin"), async (req, res) => {
   try {
     const user = await User.findById(req.params.id);
     if (!user)
@@ -1150,7 +1193,7 @@ router.patch("/admin/:id/toggle", protectAdmin, async (req, res) => {
 });
 
 // Admin: Generate missing NovaBuk IDs
-router.post("/admin/generate-ids", protectAdmin, async (req, res) => {
+router.post("/admin/generate-ids", protectAdmin, requireAdminRole("admin"), async (req, res) => {
   try {
     const users = await User.find({
       role: "Patient",
