@@ -36,8 +36,14 @@ function generateVisitSummaryPDFBuffer(visit, clinic, patient, doctorName) {
     }
 
     // Header
-    doc.fontSize(18).font("Helvetica-Bold").text(clinic.name, { align: "center" });
-    if (clinic.location?.address) {
+    // clinic can be null if .populate("clinic", ...) couldn't resolve
+    // it — a deleted clinic, an orphaned reference, any real-world
+    // data edge case. Previously unguarded here (unlike patient.novaBukId
+    // and everything else in this function), so it threw "Cannot read
+    // properties of null (reading 'name')" for exactly that visit,
+    // while every other visit with an intact clinic reference worked fine.
+    doc.fontSize(18).font("Helvetica-Bold").text(clinic?.name || "Clinic", { align: "center" });
+    if (clinic?.location?.address) {
       doc.fontSize(9).font("Helvetica").fillColor("#555").text(
         `${clinic.location.address}${clinic.location.city ? ", " + clinic.location.city : ""}`,
         { align: "center" }

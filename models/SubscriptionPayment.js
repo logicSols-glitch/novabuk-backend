@@ -78,7 +78,7 @@ const subscriptionPaymentSchema = new mongoose.Schema(
     // eventId from the deposit.received webhook header — stored with a
     // sparse unique index so a redelivered/retried webhook is a safe
     // no-op instead of double-activating a plan or double-crediting.
-    webhookEventId: { type: String, default: null },
+    webhookEventId: { type: String },
     // Free-text the clinic provides — which bank, account name, date
     // sent, etc. — to help the admin locate the transfer. Not
     // verified by the system itself; it's context for a human reviewer.
