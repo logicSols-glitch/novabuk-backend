@@ -44,6 +44,14 @@ const medicationReminderSchema = new mongoose.Schema(
     // the future cron-based reminder scheduler, to avoid duplicate
     // pushes if the job runs more than once around a fire time.
     remindersSentLog: [{ firedAt: Date }],
+
+    // Google Calendar recurring event IDs — one per dose-time-of-day,
+    // not one per individual dose (see createMedicationCalendarEvents
+    // in services/reminderService.js). frequencyPerDay=3 means up to
+    // 3 IDs here, each a whole recurring series covering all
+    // durationDays at once. Empty if the patient never connected
+    // Google Calendar, or connected it after this reminder was created.
+    calendarEventIds: { type: [String], default: [] },
   },
   { timestamps: true }
 );

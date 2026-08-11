@@ -361,7 +361,7 @@ router.patch("/visits/:id/start", requireRole("doctor", "nurse"), async (req, re
 // ─────────────────────────────────────────────────────────────
 router.patch("/visits/:id/notes", requireClinicalRole("nurse"), async (req, res) => {
   try {
-    const { diagnosis, prescription, testsOrdered, advice, clinicNotes, visitType, nextAppointment, medications } =
+    const { diagnosis, prescription, testsOrdered, advice, clinicNotes } =
       req.body;
 
     const updates = {};
@@ -370,17 +370,6 @@ router.patch("/visits/:id/notes", requireClinicalRole("nurse"), async (req, res)
     if (testsOrdered !== undefined) updates.testsOrdered = testsOrdered;
     if (advice !== undefined) updates.advice = advice;
     if (clinicNotes !== undefined) updates.clinicNotes = clinicNotes;
-    if (visitType !== undefined) updates.visitType = visitType;
-    // Draft-only — see Visit.js's comment on draftNextAppointment for
-    // why these don't become real Appointment/MedicationReminder
-    // records here. This is purely "don't lose what was typed" until
-    // /complete turns it into the real thing.
-    if (nextAppointment !== undefined) {
-      updates.draftNextAppointment = nextAppointment || null;
-    }
-    if (medications !== undefined) {
-      updates.draftMedications = Array.isArray(medications) ? medications : [];
-    }
 
     if (!Object.keys(updates).length) {
       return res.json({ success: true, savedAt: new Date() });
@@ -412,7 +401,7 @@ router.patch("/visits/:id/complete", requireRole("doctor", "nurse"), async (req,
       req.body;
 
     const visit = await Visit.findById(req.params.id)
-      .populate("user", "fullName email notificationSettings novaBukId fcmToken lastActiveAt")
+      .populate("user", "fullName email notificationSettings novaBukId fcmToken lastActiveAt googleCalendar")
       .populate("clinic", "name");
 
     if (!visit) {
@@ -483,14 +472,43 @@ router.patch("/visits/:id/complete", requireRole("doctor", "nurse"), async (req,
         data: { appointmentId: createdAppointment._id.toString() },
       }).catch((err) => console.error("Appointment push failed:", err.message));
 
-      createCalendarEvent({
-        userId: visit.user._id,
-        googleAccessToken: null, // not implemented yet — see reminderService.js
-        title: `NovaBuk Appointment — ${visit.clinic.name}`,
-        description: `Follow-up appointment at ${visit.clinic.name}.`,
-        startTime: scheduledAt.toISOString(),
-        endTime: new Date(scheduledAt.getTime() + 30 * 60000).toISOString(), // default 30min slot
-      }).catch((err) => console.error("Calendar event creation failed:", err.message));
+      // Was previously hardcoded to googleAccessToken: null with a
+      // "not implemented yet" comment — but the OAuth connect/callback
+      // flow (routes/users.js) was already fully built and storing
+      // real tokens on visit.user.googleCalendar. The two pieces just
+      // never got wired to each other; this is that connection.
+      if (visit.user.googleCalendar?.connected && visit.user.googleCalendar?.accessToken) {
+        createCalendarEvent({
+          userId: visit.user._id,
+          googleAccessToken: visit.user.googleCalendar.accessToken,
+          googleRefreshToken: visit.user.googleCalendar.refreshToken,
+          title: `NovaBuk Appointment — ${visit.clinic.name}`,
+          description: `Follow-up appointment at ${visit.clinic.name}.`,
+          startTime: scheduledAt.toISOString(),
+          endTime: new Date(scheduledAt.getTime() + 30 * 60000).toISOString(), // default 30min slot
+        })
+          .then(async (result) => {
+            if (result.success) {
+              // Appointment.js already has these fields on
+              // remindersSent — just never actually set until now.
+              await Appointment.findByIdAndUpdate(createdAppointment._id, {
+                "remindersSent.calendarEventCreated": true,
+                "remindersSent.calendarEventId": result.eventId,
+              });
+            } else if (result.needsReconnect) {
+              // Per reminderService.js's own comment on this: a 401
+              // here usually means the refresh token was revoked
+              // (patient revoked access from their Google account
+              // settings, etc.) — clear the flag so Settings shows
+              // "Connect" again instead of silently failing forever
+              // on every future appointment.
+              await User.findByIdAndUpdate(visit.user._id, {
+                "googleCalendar.connected": false,
+              });
+            }
+          })
+          .catch((err) => console.error("Calendar event creation failed:", err.message));
+      }
     }
 
     // ── FEATURE 2: MEDICATION REMINDERS ─────────────────────
@@ -520,6 +538,43 @@ router.patch("/visits/:id/complete", requireRole("doctor", "nurse"), async (req,
           startDate,
           endDate,
         });
+
+        // Same wiring as the appointment calendar fix above — was
+        // never called at all for medications previously. One
+        // recurring event per dose-time-of-day, not per dose; see
+        // createMedicationCalendarEvents in services/reminderService.js
+        // for why.
+        if (visit.user.googleCalendar?.connected && visit.user.googleCalendar?.accessToken) {
+          const { createMedicationCalendarEvents } = require("../services/reminderService");
+          createMedicationCalendarEvents({
+            userId: visit.user._id,
+            googleAccessToken: visit.user.googleCalendar.accessToken,
+            googleRefreshToken: visit.user.googleCalendar.refreshToken,
+            drugName: med.drugName,
+            dosage: med.dosage,
+            frequencyPerDay: med.frequencyPerDay,
+            durationDays: med.durationDays,
+            startDate,
+          })
+            .then(async (results) => {
+              const eventIds = results.filter((r) => r.success).map((r) => r.eventId);
+              if (eventIds.length) {
+                await MedicationReminder.findByIdAndUpdate(reminder._id, {
+                  calendarEventIds: eventIds,
+                });
+              }
+              // Same revoked-token handling as the appointment path —
+              // any one of these calls reporting needsReconnect means
+              // the same thing regardless of which dose-time it was.
+              if (results.some((r) => r.needsReconnect)) {
+                await User.findByIdAndUpdate(visit.user._id, {
+                  "googleCalendar.connected": false,
+                });
+              }
+            })
+            .catch((err) => console.error("Medication calendar events failed:", err.message));
+        }
+
         createdReminders.push(reminder);
       }
     }
