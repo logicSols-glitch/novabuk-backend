@@ -126,8 +126,16 @@ async function createCalendarEvent({
     const requestBody = {
       summary: title,
       description,
-      start: { dateTime: startTime },
-      end: { dateTime: endTime },
+      // "Missing time zone definition for start time" — Google's API
+      // requires this explicitly; a bare UTC 'Z' timestamp in dateTime
+      // isn't enough on its own, especially for recurring events
+      // (RRULE), since Google needs to know which local timezone's
+      // wall-clock/DST rules to preserve across repeat occurrences.
+      // NovaBuk operates in Nigeria, so this is fixed to Lagos rather
+      // than derived per-user — fine today since there's no per-clinic
+      // timezone concept anywhere else in this codebase either.
+      start: { dateTime: startTime, timeZone: "Africa/Lagos" },
+      end: { dateTime: endTime, timeZone: "Africa/Lagos" },
       reminders:
         reminderOverrideMinutes !== undefined
           ? { useDefault: false, overrides: [{ method: "popup", minutes: reminderOverrideMinutes }] }
@@ -237,6 +245,32 @@ async function exchangeGoogleAuthCode(authCode) {
 }
 
 // ── TERMII SMS/WHATSAPP FALLBACK ──────────────────────────────
+/**
+ * Was previously `const data = await res.json()` with no guard —
+ * if Termii returns an empty or non-JSON body (a bad API key often
+ * comes back this way rather than as a JSON error object), that
+ * throws "Unexpected end of JSON input", which the outer catch then
+ * reports as the ENTIRE failure reason — telling you nothing about
+ * what Termii actually said. This reads the raw text first, so a
+ * bad response is at least visible in the logs (status code + body),
+ * and only parses it as JSON if it looks like JSON at all.
+ */
+async function parseTermiiResponse(res) {
+  const rawText = await res.text();
+  if (!res.ok) {
+    console.error(`[reminderService] Termii responded ${res.status}: ${rawText.slice(0, 300)}`);
+  }
+  if (!rawText) {
+    return { code: null, message: `Empty response body (HTTP ${res.status})` };
+  }
+  try {
+    return JSON.parse(rawText);
+  } catch (err) {
+    console.error(`[reminderService] Termii response wasn't valid JSON: ${rawText.slice(0, 300)}`);
+    return { code: null, message: "Non-JSON response from Termii" };
+  }
+}
+
 // Only call this if the patient hasn't opened the app in 48+ hours —
 // check User.lastActiveAt before calling, not inside this function.
 async function sendSmsReminder({ userId, phone, message }) {
@@ -258,7 +292,7 @@ async function sendSmsReminder({ userId, phone, message }) {
         channel: "generic",
       }),
     });
-    const data = await res.json();
+    const data = await parseTermiiResponse(res);
     return { success: data.code === "ok", raw: data };
   } catch (err) {
     console.error("[reminderService] Termii SMS send failed:", err.message);
@@ -285,7 +319,7 @@ async function sendWhatsappReminder({ userId, whatsappNumber, message }) {
         channel: "whatsapp", // same endpoint, different channel — per Termii's docs
       }),
     });
-    const data = await res.json();
+    const data = await parseTermiiResponse(res);
     return { success: data.code === "ok", raw: data };
   } catch (err) {
     console.error("[reminderService] Termii WhatsApp send failed:", err.message);
@@ -321,7 +355,7 @@ async function sendWhatsAppDocument({ userId, whatsappNumber, caption, mediaUrl 
         media: { url: mediaUrl, caption },
       }),
     });
-    const data = await res.json();
+    const data = await parseTermiiResponse(res);
     return { success: data.code === "ok", raw: data };
   } catch (err) {
     console.error("[reminderService] Termii WhatsApp document send failed:", err.message);

@@ -40,7 +40,7 @@ const WEBHOOK_SECRET = "874c5da0425355e9164e7cdd61fac24edc820b66a3e57fd9d83ea12e
 // ^ same value as NEXAPAY_WEBHOOK_SECRET in your Render env vars —
 //   copy it from the NexaPay dashboard (Reveal/Copy button)
 
-const YOUR_REFERENCE = "NVB-SUB-202608-00020";
+const YOUR_REFERENCE = "NVB-SUB-202608-00034";
 // ^ paste in a REAL `reference` value from an existing PENDING
 //   SubscriptionPayment row in your DB — this is what the webhook
 //   needs to match against to actually find/activate that record

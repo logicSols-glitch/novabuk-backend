@@ -17,3 +17,5 @@ yarn-error.log*
 Thumbs.db
 
 README.md
+/scripts/test-nexapay-webhook.js
+scripts

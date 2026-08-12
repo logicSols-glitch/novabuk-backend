@@ -61,6 +61,9 @@ router.post("/", async (req, res) => {
     return res.status(401).json({ success: false, message: "Invalid signature." });
   }
 
+  console.log("[RAW WEBHOOK] headers:", JSON.stringify(req.headers));
+  console.log("[RAW WEBHOOK] rawBody:", rawBody.toString("utf8"));
+
   let body;
   try {
     body = JSON.parse(rawBody.toString("utf8"));
