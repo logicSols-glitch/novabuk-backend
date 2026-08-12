@@ -83,9 +83,16 @@ router.post("/", async (req, res) => {
       return res.status(200).json({ success: true, duplicate: true });
     }
 
+    // const { data } = body;
+    // const payment = await SubscriptionPayment.findOne({
+    //   reference: data.reference,
+    //   provider: "NEXAPAY",
+    //   status: "PENDING",
+    // });
+
     const { data } = body;
     const payment = await SubscriptionPayment.findOne({
-      reference: data.reference,
+      reference: data.merchantReference,
       provider: "NEXAPAY",
       status: "PENDING",
     });
@@ -95,7 +102,8 @@ router.post("/", async (req, res) => {
       // handled payment, a stray/unexpected deposit, or a reference
       // mismatch. Log for manual investigation but ack the webhook;
       // NexaPay retrying forever won't make a missing record appear.
-      console.warn(`[webhooksNexapay] No matching PENDING payment for reference "${data.reference}".`);
+      // console.warn(`[webhooksNexapay] No matching PENDING payment for reference "${data.reference}".`);
+      console.warn(`[webhooksNexapay] No matching PENDING payment for merchantReference "${data.merchantReference}".`);
       return res.status(200).json({ success: true, matched: false });
     }
 
