@@ -28,7 +28,7 @@ const PLANS = {
   Pro: {
     displayName: "Clinic Pro",
     priceMonthly: 60000,
-    priceAnnual: 48000,
+    priceAnnual: 50000,
     seatLimits: null, // no cap — "Unlimited Doctors/Staff"
     disallowedRoles: [],
   },

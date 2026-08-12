@@ -34,6 +34,61 @@ function getLagosDayBoundaries(dateStr) {
   return { startUtc, endUtc };
 }
 
+// Shared by GET /bills/report and GET /bills/report/pdf — same
+// aggregation, one JSON, one rendered to PDF. Kept as one function so
+// the two routes can never quietly drift into computing different
+// numbers for what's supposed to be the same report.
+async function buildBillingReport(clinicId, startUtc, endUtc) {
+  const allBillsInRange = await PatientBill.find({
+    clinic: clinicId,
+    createdAt: { $gte: startUtc, $lt: endUtc },
+  });
+
+  const paymentAgg = await PatientBill.aggregate([
+    { $match: { clinic: clinicId } },
+    { $unwind: "$payments" },
+    { $match: { "payments.recordedAt": { $gte: startUtc, $lt: endUtc } } },
+    { $group: { _id: "$payments.method", total: { $sum: "$payments.amount" } } },
+  ]);
+
+  const scopeAgg = await PatientBill.aggregate([
+    { $match: { clinic: clinicId } },
+    { $unwind: "$payments" },
+    { $match: { "payments.recordedAt": { $gte: startUtc, $lt: endUtc } } },
+    { $group: { _id: "$payments.scope", total: { $sum: "$payments.amount" } } },
+  ]);
+
+  const byPaymentMethod = { CASH: 0, TRANSFER: 0, POS: 0, WAIVED: 0 };
+  let totalRevenue = 0;
+  paymentAgg.forEach((row) => {
+    byPaymentMethod[row._id] = row.total;
+    totalRevenue += row.total;
+  });
+
+  // GENERAL covers consultation charges plus anything collected at
+  // the front desk that isn't scoped to a dedicated checkout — see
+  // PatientBill.js's own comment on payments[].scope.
+  const byCategory = { GENERAL: 0, PHARMACY: 0, LAB: 0 };
+  scopeAgg.forEach((row) => {
+    byCategory[row._id] = row.total;
+  });
+
+  let outstandingBalance = 0;
+  allBillsInRange.forEach((bill) => {
+    if (["UNPAID", "PART_PAID"].includes(bill.paymentStatus)) {
+      outstandingBalance += bill.totalAmount - bill.amountPaid;
+    }
+  });
+
+  return {
+    patientsSeen: allBillsInRange.length,
+    totalRevenue,
+    byPaymentMethod,
+    byCategory,
+    outstandingBalance,
+  };
+}
+
 // ─────────────────────────────────────────────────────────────
 // FEE SCHEDULE
 // ─────────────────────────────────────────────────────────────
@@ -179,6 +234,91 @@ router.get("/bills/daily-summary", requireRole("doctor", "nurse", "receptionist"
     res.json({ success: true, data: summary });
   } catch (error) {
     console.error("Daily summary error:", error);
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// GET /api/clinic/bills/report?startDate=YYYY-MM-DD&endDate=YYYY-MM-DD
+// The range-based generalization of /bills/daily-summary above —
+// same underlying philosophy (aggregate the actual payments ledger,
+// not bill-status snapshots, so revenue attributes to the day money
+// actually arrived), just over an arbitrary date range instead of one
+// day. What "today", "this week", "this month" etc. means is decided
+// by the FRONTEND (which sends explicit startDate/endDate) rather
+// than baked in here — keeps the policy question ("does a week start
+// Sunday or Monday?") somewhere easy to see and change, not buried in
+// backend date math.
+//
+// Adds a category breakdown (byScope: GENERAL/PHARMACY/LAB) on top of
+// what daily-summary already had — reusing payments[].scope, the
+// same field PatientBill already uses to track which checkout
+// collected each payment. Deliberately NOT built from lineItems: a
+// lineItems-based breakdown would total the full BILLED amount
+// (including anything still unpaid) and silently disagree with
+// totalRevenue (which only counts money actually collected) — using
+// the same ledger for both keeps the numbers on this report
+// internally consistent with each other.
+// ─────────────────────────────────────────────────────────────
+router.get("/bills/report", requireRole(), async (req, res) => {
+  try {
+    const { startDate, endDate } = req.query;
+    if (!startDate || !endDate) {
+      return res.status(400).json({
+        success: false,
+        message: "startDate and endDate (YYYY-MM-DD) are both required.",
+      });
+    }
+
+    const { startUtc } = getLagosDayBoundaries(startDate);
+    const { endUtc } = getLagosDayBoundaries(endDate); // exclusive upper bound = start of the day AFTER endDate
+    const clinicId = new mongoose.Types.ObjectId(req.actor.clinicId);
+
+    const summary = await buildBillingReport(clinicId, startUtc, endUtc);
+    summary.startDate = startDate;
+    summary.endDate = endDate;
+
+    res.json({ success: true, data: summary });
+  } catch (error) {
+    console.error("Billing report error:", error);
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// GET /api/clinic/bills/report/pdf?startDate=&endDate=
+// Same aggregation as above, rendered as a downloadable/printable PDF
+// — same res.setHeader + res.send(buffer) pattern already used for
+// receipts/prescriptions/visit summaries elsewhere in this codebase.
+// ─────────────────────────────────────────────────────────────
+router.get("/bills/report/pdf", requireRole(), async (req, res) => {
+  try {
+    const { startDate, endDate } = req.query;
+    if (!startDate || !endDate) {
+      return res.status(400).json({
+        success: false,
+        message: "startDate and endDate (YYYY-MM-DD) are both required.",
+      });
+    }
+
+    const { startUtc } = getLagosDayBoundaries(startDate);
+    const { endUtc } = getLagosDayBoundaries(endDate);
+    const clinicId = new mongoose.Types.ObjectId(req.actor.clinicId);
+
+    const summary = await buildBillingReport(clinicId, startUtc, endUtc);
+    const clinic = await Clinic.findById(req.actor.clinicId);
+
+    const { generateBillingReportPDFBuffer } = require("../services/reportService");
+    const pdfBuffer = await generateBillingReportPDFBuffer(summary, clinic, startDate, endDate);
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="novabuk-report-${startDate}_to_${endDate}.pdf"`
+    );
+    res.send(pdfBuffer);
+  } catch (error) {
+    console.error("Billing report PDF error:", error);
     res.status(500).json({ success: false, message: "Server error." });
   }
 });
@@ -531,7 +671,7 @@ router.patch("/bills/:id/pay-pharmacy", requireRole("pharmacist"), async (req, r
     if (amountPaid > pharmacyRemaining) {
       return res.status(400).json({
         success: false,
-        message: `Amount exceeds the outstanding pharmacy balance of \u20a6${pharmacyRemaining.toLocaleString()}. Consultation charges are handled at checkout; lab charges by the lab team.`,
+        message: `Amount exceeds the outstanding pharmacy balance of \u20a6${pharmacyRemaining.toLocaleString()}. Consultation and lab charges are handled at checkout, not here.`,
       });
     }
 
@@ -561,88 +701,6 @@ router.patch("/bills/:id/pay-pharmacy", requireRole("pharmacist"), async (req, r
     res.json({ success: true, message: "Pharmacy payment recorded.", data: bill });
   } catch (error) {
     console.error("Record pharmacy payment error:", error);
-    res.status(500).json({ success: false, message: "Server error." });
-  }
-});
-
-// PATCH /api/clinic/bills/:id/pay-lab
-// Same idea as /bills/:id/pay-pharmacy above, for lab charges. Worth
-// noting explicitly: lab charges bill at ORDER time, not result time
-// (see LabRequest.js) — so this can have money to collect the moment
-// a request exists, before a single result has been entered. Strictly
-// scoped to LAB line items only; consultation/pharmacy charges stay
-// with the front desk (or pharmacist, respectively) via their own
-// routes. No WAIVED option here either, for the same reason as
-// pharmacy — forgiving a balance is a front-desk/owner-level call.
-router.patch("/bills/:id/pay-lab", requireRole("lab_tech"), async (req, res) => {
-  try {
-    const bill = await PatientBill.findOne({ _id: req.params.id, clinic: req.actor.clinicId });
-    if (!bill) {
-      return res.status(404).json({ success: false, message: "Bill not found." });
-    }
-
-    if (["PAID", "WAIVED"].includes(bill.paymentStatus)) {
-      return res.status(400).json({ success: false, message: "This bill is already settled." });
-    }
-
-    const labSubtotal = bill.lineItems
-      .filter((item) => item.itemType === "LAB")
-      .reduce((sum, item) => sum + item.lineTotal, 0);
-
-    // Same double-cap reasoning as pay-pharmacy: bounded by both the
-    // lab portion specifically AND the bill's overall remaining
-    // balance, in case the front desk already paid down the whole
-    // bill (lab charges included) through the general route.
-    const overallRemaining = bill.totalAmount - bill.amountPaid;
-    const labRemaining = Math.max(0, Math.min(labSubtotal - bill.amountPaidLab, overallRemaining));
-
-    if (labRemaining <= 0) {
-      return res.status(400).json({
-        success: false,
-        message: "There's nothing outstanding for lab charges on this bill.",
-      });
-    }
-
-    const { paymentMethod, amountPaid } = req.body;
-    if (!["CASH", "TRANSFER", "POS"].includes(paymentMethod)) {
-      return res.status(400).json({ success: false, message: "paymentMethod must be CASH, TRANSFER, or POS." });
-    }
-    if (typeof amountPaid !== "number" || amountPaid <= 0) {
-      return res.status(400).json({ success: false, message: "amountPaid must be a positive number." });
-    }
-    if (amountPaid > labRemaining) {
-      return res.status(400).json({
-        success: false,
-        message: `Amount exceeds the outstanding lab balance of \u20a6${labRemaining.toLocaleString()}. Consultation charges are handled at checkout; pharmacy charges by the pharmacist.`,
-      });
-    }
-
-    bill.amountPaidLab += amountPaid;
-    bill.amountPaid += amountPaid;
-    bill.paymentMethod = paymentMethod;
-    bill.paymentStatus = bill.amountPaid >= bill.totalAmount ? "PAID" : "PART_PAID";
-    bill.payments.push({
-      amount: amountPaid,
-      method: paymentMethod,
-      scope: "LAB",
-      recordedById: req.actor.id,
-      recordedByType: req.actor.isOwner ? "User" : "ClinicStaff",
-      recordedByName: req.actor.fullName,
-    });
-
-    if (bill.paymentStatus === "PAID" && !bill.receiptNumber) {
-      bill.receiptNumber = await generateReceiptNumber();
-      bill.paidAt = new Date();
-    }
-
-    bill.handledById = req.actor.id;
-    bill.handledByType = req.actor.isOwner ? "User" : "ClinicStaff";
-
-    await bill.save();
-
-    res.json({ success: true, message: "Lab payment recorded.", data: bill });
-  } catch (error) {
-    console.error("Record lab payment error:", error);
     res.status(500).json({ success: false, message: "Server error." });
   }
 });
