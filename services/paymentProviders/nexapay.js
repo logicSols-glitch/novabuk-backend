@@ -46,7 +46,7 @@ const BASE_URL = process.env.NEXAPAY_BASE_URL || "https://api.nexapay.ng/api/v1"
 function getApiKey() {
   const useProd = (process.env.NEXAPAY_ENV || "test").toLowerCase() === "production";
   const key = useProd ? process.env.NEXAPAY_API_KEY_PROD : process.env.NEXAPAY_API_KEY_TEST;
-  console.log(`[DEBUG nexapay] useProd=${useProd} keyLength=${key?.length} keyPreview="${key?.slice(0, 12)}...${key?.slice(-4)}"`);
+  // console.log(`[DEBUG nexapay] useProd=${useProd} keyLength=${key?.length} keyPreview="${key?.slice(0, 12)}...${key?.slice(-4)}"`);
   if (!key) {
     throw new Error(
       `[nexapay] Missing ${useProd ? "NEXAPAY_API_KEY_PROD" : "NEXAPAY_API_KEY_TEST"} env var.`
