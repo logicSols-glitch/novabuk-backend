@@ -192,9 +192,18 @@ router.get("/my", protectClinicPortal, async (req, res) => {
     // gates) had already correctly downgraded them to FREE_TIER.
     // Attaching it here so the frontend can check the real thing
     // instead of the stale field.
-    const { getEffectiveStatus } = require("../services/subscriptionService");
+    //
+    // effectivePlanLevel is separate: it's what middleware/planGate.js
+    // actually gates features on — resolves a TRIAL clinic down to
+    // BASIC or PREMIUM based on the plan selected at signup, rather
+    // than granting blanket full access during trial. The Settings
+    // page needs BOTH — effectiveStatus to know whether to show a
+    // "Free Trial" state at all, effectivePlanLevel to know which
+    // features are actually unlocked while on it.
+    const { getEffectiveStatus, getEffectivePlanLevel } = require("../services/subscriptionService");
     const clinicObj = clinic.toObject();
     clinicObj.effectiveStatus = getEffectiveStatus(clinic);
+    clinicObj.effectivePlanLevel = getEffectivePlanLevel(clinic);
     res.json({ success: true, clinic: clinicObj });
   } catch (error) {
     res.status(500).json({ success: false, message: "Server error." });
