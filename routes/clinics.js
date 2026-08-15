@@ -878,13 +878,20 @@ router.get("/subscription-payments/my", protectClinicPortal, requireRole(), asyn
 // GET /api/clinics/admin/subscription-payments
 // NovaBuk platform admin — every submission across all clinics,
 // pending ones first, so a reviewer sees what needs action right away.
-// ?status=PENDING|VERIFIED|REJECTED to filter.
+// ?status=PENDING|VERIFIED|REJECTED filters by review status;
+// ?refundStatus=OWED filters to NEXAPAY deposits that landed with the
+// wrong amount and are still waiting on a manual refund (see the
+// /:id/mark-refunded route below) — bank transfers are push-based, so
+// a mismatched NexaPay deposit still gets auto-REJECTED here, not
+// silently dropped; only PENDING NEXAPAY rows never reach this list,
+// since those are still waiting on their webhook.
 // ─────────────────────────────────────────────────────────────
 router.get("/admin/subscription-payments", protectAdmin, requireAdminRole("admin"), async (req, res) => {
   try {
     const SubscriptionPayment = require("../models/SubscriptionPayment");
     const query = {};
     if (req.query.status) query.status = req.query.status;
+    if (req.query.refundStatus) query.refundStatus = req.query.refundStatus;
 
     const payments = await SubscriptionPayment.find(query)
       .populate("clinic", "name")
@@ -983,6 +990,58 @@ router.patch("/admin/subscription-payments/:id/review", protectAdmin, requireAdm
     res.json({ success: true, message: `Payment ${decision.toLowerCase()}.`, data: payment });
   } catch (error) {
     console.error("Review subscription payment error:", error);
+    res.status(500).json({ success: false, message: "Server error." });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// PATCH /api/clinics/admin/subscription-payments/:id/mark-refunded
+// NovaBuk platform admin confirms a mismatched NexaPay deposit has
+// been manually refunded to the payer. NexaPay's API can only pay out
+// to OUR OWN verified settlement account (/withdrawal/request) — there
+// is no endpoint to send money to a third party — so the actual
+// transfer back to the payer happens outside this app, in the admin's
+// own banking app, using the payerName/payerAccountNumber/payerBankName
+// captured on this record by the webhook. This route only records that
+// it happened; it does not move any money itself.
+// Body: { refundReference, refundNote? }
+// refundReference is required — the admin's own outbound transfer
+// reference/narration, so this is reconcilable against a bank statement.
+// ─────────────────────────────────────────────────────────────
+router.patch("/admin/subscription-payments/:id/mark-refunded", protectAdmin, requireAdminRole("admin"), async (req, res) => {
+  try {
+    const SubscriptionPayment = require("../models/SubscriptionPayment");
+    const { refundReference, refundNote } = req.body;
+
+    if (!refundReference || !refundReference.trim()) {
+      return res.status(400).json({ success: false, message: "A refundReference is required." });
+    }
+
+    const payment = await SubscriptionPayment.findById(req.params.id);
+    if (!payment) {
+      return res.status(404).json({ success: false, message: "Payment submission not found." });
+    }
+    if (payment.provider !== "NEXAPAY") {
+      return res.status(400).json({ success: false, message: "Only NexaPay payments can be marked refunded here." });
+    }
+    if (payment.refundStatus !== "OWED") {
+      return res.status(400).json({
+        success: false,
+        message: `This payment isn't awaiting a refund (refundStatus: ${payment.refundStatus}).`,
+      });
+    }
+
+    payment.refundStatus = "ISSUED";
+    payment.refundedById = req.admin._id;
+    payment.refundedByName = req.admin.name;
+    payment.refundedAt = new Date();
+    payment.refundReference = refundReference.trim();
+    payment.refundNote = refundNote || "";
+    await payment.save();
+
+    res.json({ success: true, message: "Refund marked as issued.", data: payment });
+  } catch (error) {
+    console.error("Mark refunded error:", error);
     res.status(500).json({ success: false, message: "Server error." });
   }
 });

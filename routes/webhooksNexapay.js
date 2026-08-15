@@ -61,9 +61,6 @@ router.post("/", async (req, res) => {
     return res.status(401).json({ success: false, message: "Invalid signature." });
   }
 
-  // console.log("[RAW WEBHOOK] headers:", JSON.stringify(req.headers));
-  // console.log("[RAW WEBHOOK] rawBody:", rawBody.toString("utf8"));
-
   let body;
   try {
     body = JSON.parse(rawBody.toString("utf8"));
@@ -86,13 +83,6 @@ router.post("/", async (req, res) => {
       return res.status(200).json({ success: true, duplicate: true });
     }
 
-    // const { data } = body;
-    // const payment = await SubscriptionPayment.findOne({
-    //   reference: data.reference,
-    //   provider: "NEXAPAY",
-    //   status: "PENDING",
-    // });
-
     const { data } = body;
     const payment = await SubscriptionPayment.findOne({
       reference: data.merchantReference,
@@ -105,7 +95,6 @@ router.post("/", async (req, res) => {
       // handled payment, a stray/unexpected deposit, or a reference
       // mismatch. Log for manual investigation but ack the webhook;
       // NexaPay retrying forever won't make a missing record appear.
-      // console.warn(`[webhooksNexapay] No matching PENDING payment for reference "${data.reference}".`);
       console.warn(`[webhooksNexapay] No matching PENDING payment for merchantReference "${data.merchantReference}".`);
       return res.status(200).json({ success: true, matched: false });
     }
@@ -118,14 +107,28 @@ router.post("/", async (req, res) => {
     const clinicName = clinic?.name || "your clinic";
 
     if (data.status !== "successful" || Number(data.amount) !== payment.amount) {
+      const isAmountMismatch = data.status === "successful" && Number(data.amount) !== payment.amount;
+
       payment.status = "REJECTED";
       payment.reviewedByName = "NexaPay (auto)";
       payment.reviewedAt = new Date();
-      payment.reviewNote =
-        data.status !== "successful"
-          ? `Deposit status was "${data.status}", not "successful".`
-          : `Amount mismatch: expected ${payment.amount}, received ${data.amount}.`;
+      payment.reviewNote = isAmountMismatch
+        ? `Amount mismatch: expected ${payment.amount}, received ${data.amount}.`
+        : `Deposit status was "${data.status}", not "successful".`;
       payment.webhookEventId = eventId;
+
+      // Only a genuine amount mismatch on an otherwise-successful deposit
+      // means real money actually landed in our NGN wallet and is owed
+      // back — bank transfers are push-based, so NexaPay can't decline a
+      // wrong amount before it lands (see file header). A non-"successful"
+      // status means nothing settled, so there's nothing to refund.
+      if (isAmountMismatch) {
+        payment.refundStatus = "OWED";
+        payment.payerName = data.senderName || "";
+        payment.payerAccountNumber = data.senderAccount || "";
+        payment.payerBankName = data.senderBank || "";
+      }
+
       await payment.save();
 
       console.error(

@@ -62,9 +62,44 @@ async function activateClinicPlan({ clinic, plan, billingCycle }) {
   clinic.subscriptionPlan = plan;
   clinic.subscriptionStatus = "Active";
   clinic.subscriptionExpiry = expiry;
+  // Disable trial masking once the clinic has a paid subscription so
+  // the UI and feature gates see the paid plan immediately even if
+  // the original trial window hasn't expired.
+  clinic.trialDisabledOnPaid = true;
   await clinic.save();
 
   return clinic;
+}
+
+// Reconcile the one-way trialDisabledOnPaid flag so clinics that paid
+// then let their subscription lapse while their original trial still
+// runs don't lose the remainder of their trial days. If the clinic
+// has no active subscription and the trial is still in the future,
+// clear the flag.
+async function reconcileTrialFlag(clinic) {
+  const now = new Date();
+
+  const hasActiveSubscription =
+    clinic.subscriptionStatus === "Active" &&
+    clinic.subscriptionExpiry &&
+    clinic.subscriptionExpiry > now;
+
+  if (
+    clinic.trialDisabledOnPaid &&
+    !hasActiveSubscription &&
+    clinic.trialEndsAt &&
+    clinic.trialEndsAt > now
+  ) {
+    clinic.trialDisabledOnPaid = false;
+    try {
+      await clinic.save();
+    } catch (err) {
+      console.error(
+        "[subscriptionService] Failed to reconcile trialDisabledOnPaid:",
+        err.message,
+      );
+    }
+  }
 }
 
 module.exports = {
@@ -72,41 +107,29 @@ module.exports = {
   amountForPlan,
   activateClinicPlan,
   getEffectiveStatus,
+  getEffectivePlanLevel,
+  getUiPlanState,
   getReactivationCTA,
 };
 
 // ── EFFECTIVE PLAN STATUS ────────────────────────────────────────
 /**
- * Feature 3 (Free Degraded Tier) calls for a daily cron that flips a
- * clinic to FREE_TIER status at day 60 of its trial. That's a real
- * design choice worth naming explicitly: a stored field kept in sync
- * by a cron can drift — if the cron is late, fails silently one day,
- * or a clinic's admin manually edits subscriptionExpiry, the stored
- * status is wrong until the next run, and every enforcement check in
- * the meantime is either too strict or (worse) too permissive.
+ * We keep two distinct concepts explicit:
+ *   - effectiveStatus: lifecycle state (TRIAL / FREE_TIER / BASIC / PREMIUM)
+ *   - effectivePlanLevel: what the clinic is allowed to do right now based on
+ *     selected plan during trial or active paid plan after payment.
  *
- * This computes the clinic's effective status fresh on every call
- * instead, from fields that are already the source of truth
- * (trialEndsAt, subscriptionStatus, subscriptionExpiry,
- * subscriptionPlan) — so it can never be stale. There's no
- * reset/flip cron to run or monitor; correctness falls out of the
- * math instead of depending on a background job having run recently.
+ * This matters because a clinic can be in TRIAL while still having selected
+ * the Pro plan. That is not the same thing as an active paid subscription.
  *
- * Order matches the spec exactly: TRIAL → FREE_TIER → BASIC → PREMIUM.
- *   TRIAL   — still inside the 60-day trial window
- *   PREMIUM — Active subscription, not expired, plan is Pro
- *   BASIC   — Active subscription, not expired, plan is Growth
- *   FREE_TIER — everything else: trial over AND no active paid plan
- *               (never subscribed, subscription lapsed, or was
- *               manually deactivated — all collapse to the same
- *               degraded state, which is the correct behavior either way)
+ * Order matches the product rule: TRIAL → FREE_TIER → BASIC → PREMIUM.
+ *   TRIAL    — still inside the 60-day trial window, regardless of signup plan
+ *   PREMIUM  — Active subscription, not expired, plan is Pro
+ *   BASIC    — Active subscription, not expired, plan is Growth
+ *   FREE_TIER — trial ended or no active paid plan
  */
 function getEffectiveStatus(clinic) {
   const now = new Date();
-
-  if (clinic.trialEndsAt && clinic.trialEndsAt > now) {
-    return "TRIAL";
-  }
 
   const hasActiveSubscription =
     clinic.subscriptionStatus === "Active" &&
@@ -117,7 +140,40 @@ function getEffectiveStatus(clinic) {
     return clinic.subscriptionPlan === "Pro" ? "PREMIUM" : "BASIC";
   }
 
+  if (clinic.trialEndsAt && clinic.trialEndsAt > now) {
+    return "TRIAL";
+  }
+
   return "FREE_TIER";
+}
+
+function getEffectivePlanLevel(clinic) {
+  const status = getEffectiveStatus(clinic);
+
+  if (status === "FREE_TIER") return "FREE_TIER";
+  if (status === "TRIAL") {
+    return clinic.subscriptionPlan === "Pro" ? "PREMIUM" : "BASIC";
+  }
+
+  return status;
+}
+
+function getUiPlanState(clinic) {
+  const now = new Date();
+  const hasActiveSubscription =
+    clinic.subscriptionStatus === "Active" &&
+    clinic.subscriptionExpiry &&
+    clinic.subscriptionExpiry > now;
+
+  if (hasActiveSubscription) {
+    return clinic.subscriptionPlan === "Pro" ? "Pro" : "Growth";
+  }
+
+  if (clinic.trialEndsAt && clinic.trialEndsAt > now) {
+    return "Free Trial";
+  }
+
+  return clinic.subscriptionPlan === "Pro" ? "Expired" : "Free";
 }
 
 // ── "RENEW" VS "SUBSCRIBE/UPGRADE" WORDING ───────────────────────

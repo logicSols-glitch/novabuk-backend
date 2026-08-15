@@ -115,6 +115,34 @@ const subscriptionPaymentSchema = new mongoose.Schema(
       enum: ["ADMIN_MANUAL", "WEBHOOK_AUTO", null],
       default: null,
     },
+
+    // ── PAYER DETAILS (NEXAPAY-ONLY — captured off the deposit.received
+    // webhook at rejection time) ──────────────────────────────────
+    // Bank transfers are push-based — NexaPay can't decline a mismatched
+    // deposit before it lands (see routes/webhooksNexapay.js), so a wrong
+    // amount still credits our NGN wallet and has to be refunded manually.
+    // These three let an admin actually send that refund without digging
+    // through Render logs or NexaPay's dashboard to find who sent it.
+    payerName: { type: String, default: "" },
+    payerAccountNumber: { type: String, default: "" },
+    payerBankName: { type: String, default: "" },
+
+    // ── REFUND TRACKING (NEXAPAY-ONLY) ──────────────────────────────
+    // NexaPay's API has no endpoint to pay a third party — /withdrawal/request
+    // only pays out to OUR OWN verified settlement account — so refunding a
+    // mismatched deposit is a manual bank transfer admin does outside the
+    // app. This just tracks that it's owed, then that it's done.
+    refundStatus: {
+      type: String,
+      enum: ["NOT_APPLICABLE", "OWED", "ISSUED"],
+      default: "NOT_APPLICABLE",
+      index: true,
+    },
+    refundedById: { type: mongoose.Schema.Types.ObjectId, default: null },
+    refundedByName: { type: String, default: "" }, // snapshot, same pattern as reviewedByName
+    refundedAt: { type: Date, default: null },
+    refundReference: { type: String, default: "" }, // the admin's own outbound bank transfer reference
+    refundNote: { type: String, default: "" },
   },
   { timestamps: true }
 );
